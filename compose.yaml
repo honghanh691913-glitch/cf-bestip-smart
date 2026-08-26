@@ -1,0 +1,45 @@
+name: cf-bestip-smart-nrt-test
+
+services:
+  bestip:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cf-bestip-smart:nrt-test-v1.2.0
+    container_name: cf-bestip-smart-nrt-test
+    restart: unless-stopped
+    init: true
+
+    # VPS 测速建议 host 网络，测速路径更接近宿主机真实出口。
+    network_mode: host
+
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_PUBLISH_ENABLED: ${GITHUB_PUBLISH_ENABLED:-false}
+      GITHUB_OWNER: ${GITHUB_OWNER:-honghanh691913-glitch}
+      GITHUB_REPO: ${GITHUB_REPO:-cf-bestip-smart}
+      GITHUB_BRANCH: ${GITHUB_BRANCH:-main}
+      RUN_ON_START: ${RUN_ON_START:-true}
+      SCHEDULE_HOURS: ${SCHEDULE_HOURS:-0,6,12,18}
+      SCHEDULE_MINUTE: ${SCHEDULE_MINUTE:-5}
+      RANDOM_DELAY_SECONDS: ${RANDOM_DELAY_SECONDS:-120}
+
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./ranges:/app/ranges:ro
+      - ./data/generated:/app/generated
+      - ./data/runtime:/app/runtime
+
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+
+    healthcheck:
+      test: ["CMD", "python3", "/app/healthcheck.py"]
+      interval: 5m
+      timeout: 20s
+      retries: 3
+      start_period: 10m
+
+    stop_grace_period: 30s

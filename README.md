@@ -1,245 +1,268 @@
-# Cloudflare BestIP Orchestrator v1.0.0
+# cf-bestip-smart v1.2.0
 
-这个项目不修改 Cloudflare-BestIP / CFST 测速核心，而是在 CFST 外面加一层 **分段抽样 → Colo 过滤 → 255 合格候选池 → 200 个最终下载测速 → Top 5 → GitHub 原子发布 → Worker 展示**。
+Cloudflare IPv4/IPv6 BestIP 测速调度器。此版把目标网段完全外置到 TXT，Python 与 `config.json` 不再保存具体 NRT 网段内容。
 
-## 默认目标
+## 这一版的目录
 
-每 6 小时生成 4 个池：
+```text
+cf-bestip-smart-v1.2.0-final/
+├── compose.yaml
+├── Dockerfile
+├── config.json
+├── .env.example
+├── bestip_orchestrator.py
+├── scheduler.py
+├── healthcheck.py
+├── install_cfst.py
+├── worker.js
+├── ranges/
+│   ├── NRT/
+│   │   ├── ipv4.txt
+│   │   └── ipv6.txt
+│   └── WEST/
+│       ├── ipv4.txt
+│       └── ipv6.txt
+└── data/
+    ├── generated/
+    └── runtime/
+```
 
-- 亚太/NRT IPv4：Top 5
-- 亚太/NRT IPv6：Top 5
-- 美西 IPv4：Top 5
-- 美西 IPv6：Top 5
-- 合计 `output/all/best20.txt`：20 条
+## 你以后只需要改这里
 
-TXT 格式对 IPv6 使用 `[IPv6]:443#备注`，IPv4 使用 `IPv4:443#备注`，方便 CFnew / EdgeTunnel / 自定义订阅直接消费。
+当前默认只启用 NRT：
 
-## 核心算法
+```text
+ranges/NRT/ipv4.txt
+ranges/NRT/ipv6.txt
+```
 
-### 1. 每个 CIDR 先做“分裂探测”
+一行一个 CIDR：
 
-对每个 IPv4/IPv6 CIDR：
+```text
+# IPv4
+203.0.113.0/24
+```
 
-1. 随机 4 个地址。
-2. 4 个都没有合格结果，再随机 4 个。
-3. 最多 3 轮（共 12 个）。
-4. 三轮都失败，这个 CIDR 本轮直接淘汰，不继续浪费时间。
-5. 只要任意一轮出现合格 IP，该 CIDR 进入“活跃段”。
+```text
+# IPv6
+2001:db8::/32
+```
 
-### 2. 从活跃段补齐 255 个可用候选
+空行和 `#` 注释会被忽略。
 
-只从活跃段继续随机抽样。**Colo 不符合的 IP 即使连通也不计入 255**。
+**网段内容不用写进 Python，也不用写进 config.json。** 后期换网段只修改两个 TXT。Compose 把整个 `ranges/` 以只读方式挂载到容器，因此修改本机 TXT 后无需重新 build，下一轮测速直接读取新内容。
 
-默认：
+> 如果 TXT 是通过 GitHub 仓库维护的，在 VPS 执行 `git pull` 后，新内容下一轮就会生效。
 
-- `candidate_target = 255`
-- 最终从其中延迟/丢包较好的前 `200` 个执行下载测速
-- 每类取 Top `5`
+## NRT 筛选逻辑
 
-IPv6 不枚举巨大地址空间，只随机抽样，因此不会因为 `/32`、`/48` 太大而爆内存。
+默认启用池：
 
-### 3. Colo 分类
+```text
+apac/ipv4 -> 只接受 NRT
+apac/ipv6 -> 只接受 NRT
+```
 
-默认亚太池严格要求 `NRT`。
+程序从 TXT CIDR 中随机抽取地址，用 CloudflareSpeedTest 进行快速筛选和最终下载测速，并根据实际 HTTPing/测速得到的 Cloudflare Colo 判断是否进入 `NRT`。
 
-默认美西池只允许：
+注意：Cloudflare 是 Anycast。NRT 表示**当前测速 VPS 从自己的网络出口访问该地址时实际落到 NRT**，不是某个 IP 永久属于东京。
 
-`LAX,SJC,SEA,PHX,LAS,PDX,DEN,SLC,SAN`
+## 美西目录
 
-并额外排除整个 APAC 组：`NRT/KIX/HKG/ICN/TPE/SIN/...`。
+已经预留：
 
-这些全部可以在 `config.json` 修改。
+```text
+ranges/WEST/ipv4.txt
+ranges/WEST/ipv6.txt
+```
 
-> 注意：Cloudflare Anycast 的 Colo 是“从当前测速机器访问该 IP 时命中的 PoP”，不是 IP 永久属于某城市。如果你需要“本地到 NRT”和“凤凰城 VPS 到 LAX”两个真正独立的网络视角，最好在两个位置各跑一份。单台机器只能准确代表它自己的出口路径。
-
-## CIDR 来源
-
-`west` 默认实时读取 Cloudflare 官方 IPv4/IPv6 大段。
-
-`apac` 默认 `custom_or_official`：
-
-- 你在 `pools.apac.ipv4.cidrs` / `ipv6.cidrs` 填入自己已经确认的 NRT 段时，只跑这些段。
-- 留空则回退 Cloudflare 官方大段，再通过 HTTPing Colo 筛 NRT。
-
-示例：
+当前 `config.json` 中：
 
 ```json
-"apac": {
-  "include_colos": ["NRT"],
-  "ipv4": {
-    "source": "custom",
-    "cidrs": ["你的NRT-v4段1", "你的NRT-v4段2"]
-  },
-  "ipv6": {
-    "source": "custom",
-    "cidrs": ["你的NRT-v6段1", "你的NRT-v6段2"]
-  }
+"west": {
+  "enabled": false
 }
 ```
 
-## 安装
+所以不会参与当前 NRT 测试。以后需要时，把美西网段放进这两个 TXT，再把 `west.enabled` 改为 `true` 即可。
 
-Linux：
+## 与旧 BestIP 测试隔离
 
-```bash
-unzip cf-bestip-orchestrator-v1.0.0.zip
-cd cf-bestip-orchestrator-v1.0.0
-sudo ./install.sh
-```
-
-`install.sh` 会从 XIU2/CloudflareSpeedTest 最新 Release 下载当前 CPU 架构的 `cfst`。
-
-先自检：
-
-```bash
-python3 bestip_orchestrator.py --self-test
-```
-
-先不推 GitHub 测一遍：
-
-```bash
-python3 bestip_orchestrator.py --dry-run
-```
-
-本地结果在 `generated/`。
-
-## GitHub 发布
-
-建议新建一个**公开结果仓库**，例如：
-
-`YOUR_GITHUB_USER/BestIP-Result`
-
-创建 Fine-grained PAT，只授权这个仓库，Repository permissions 只给：
-
-- Contents: Read and write
-
-Token 不要写进 `config.json`。Linux systemd 默认读取：
+此包的 Compose 使用独立名称：
 
 ```text
-/etc/cf-bestip.env
+Compose project: cf-bestip-smart-nrt-test
+container:       cf-bestip-smart-nrt-test
+image:           cf-bestip-smart:nrt-test-v1.2.0
 ```
 
-内容：
+并使用当前目录自己的：
+
+```text
+data/generated/
+data/runtime/
+```
+
+因此不会复用旧容器的数据目录。
+
+测试阶段 GitHub 自动发布**默认关闭**：
+
+```env
+GITHUB_PUBLISH_ENABLED=false
+```
+
+这样即使你启动新容器，也不会覆盖旧仓库中的稳定测速结果。
+
+## 部署
+
+### 1. 解压并进入目录
 
 ```bash
+unzip cf-bestip-smart-v1.2.0-final.zip
+cd cf-bestip-smart-v1.2.0-final
+```
+
+### 2. 填入 NRT 网段
+
+编辑：
+
+```bash
+nano ranges/NRT/ipv4.txt
+nano ranges/NRT/ipv6.txt
+```
+
+确保至少各有一个有效 CIDR；只有注释或空文件时，程序会拒绝启动测速，防止误用其他网段。
+
+### 3. 准备环境变量
+
+```bash
+cp .env.example .env
+```
+
+测试阶段保持：
+
+```env
+GITHUB_PUBLISH_ENABLED=false
+```
+
+### 4. 如果旧容器正在测速，先停旧容器
+
+如果旧项目也是 Compose 部署，在旧项目目录执行：
+
+```bash
+docker compose down
+```
+
+如果只想停止、不删除：
+
+```bash
+docker compose stop
+```
+
+旧配置、旧结果文件不会因为 stop 被删除。
+
+### 5. 构建并启动新测试
+
+```bash
+docker compose -f compose.yaml build --pull
+docker compose -f compose.yaml up -d
+```
+
+### 6. 看日志
+
+```bash
+docker compose -f compose.yaml logs -f bestip
+```
+
+第一次启动默认立即跑一轮：
+
+```env
+RUN_ON_START=true
+```
+
+之后默认：
+
+```text
+00:05
+06:05
+12:05
+18:05
+```
+
+并加入最多 120 秒随机延迟。
+
+## 手动立即跑一轮
+
+```bash
+docker compose -f compose.yaml exec bestip \
+  python3 /app/bestip_orchestrator.py --config /app/config.json --run-now
+```
+
+## 查看本地结果
+
+成功后看：
+
+```text
+data/generated/
+```
+
+运行状态：
+
+```text
+data/runtime/last-success.json
+data/runtime/last-failure.json
+```
+
+## 稳定后开启 GitHub 发布
+
+确认新测试稳定后，编辑 `.env`：
+
+```env
+GITHUB_PUBLISH_ENABLED=true
 GITHUB_TOKEN=github_pat_xxxxxxxxx
+GITHUB_OWNER=honghanh691913-glitch
+GITHUB_REPO=cf-bestip-smart
+GITHUB_BRANCH=main
 ```
 
-权限：
+然后：
 
 ```bash
-sudo chmod 600 /etc/cf-bestip.env
+docker compose -f compose.yaml up -d --force-recreate
 ```
 
-然后修改 `config.json`：
+也可以继续保持 `false`，只把它当纯测速容器。
 
-```json
-"github": {
-  "enabled": true,
-  "owner": "你的GitHub用户名",
-  "repo": "BestIP-Result",
-  "branch": "main",
-  "token_env": "GITHUB_TOKEN"
-}
-```
+## 当前关键参数
 
-发布使用 GitHub Git Data API **一次提交所有文件并最后移动 branch ref**，不是逐个文件覆盖；只有四个池全部达到 Top 5 才发布。任一池不足，整轮终止，GitHub 保留上一版。
-
-## 输出
+`config.json` 默认：
 
 ```text
-output/
-├── apac/
-│   ├── ipv4.txt
-│   ├── ipv4.csv
-│   ├── ipv4-pool.csv
-│   ├── ipv6.txt
-│   ├── ipv6.csv
-│   └── ipv6-pool.csv
-├── west/
-│   ├── ipv4.txt
-│   ├── ipv4.csv
-│   ├── ipv4-pool.csv
-│   ├── ipv6.txt
-│   ├── ipv6.csv
-│   └── ipv6-pool.csv
-└── all/
-    ├── best20.txt
-    └── best20.csv
-status.json
+目标有效候选：255
+每段初探：4 个 IP
+初探轮数：3
+最终下载候选：200
+最终 Top N：5
+最大延迟：350 ms
+最大丢包：20%
+测速端口：443
 ```
 
-`*-pool.csv` 保存本轮最终测速的全部合格候选，Top 5 文件只放最终结果。
+## 更新 TXT 后是否需要重建镜像？
 
-## 排序
+不需要。
 
-默认不是“延迟最低优先”，而是：
+因为 Compose 有：
 
-1. 丢包更低
-2. 下载速度更高
-3. 延迟更低
-
-这更适合代理/CDN实际使用，而不是只追求 ping 数字。
-
-## Worker 页面
-
-把 `worker.js` 部署到 Cloudflare Workers，然后配置变量：
-
-- `GITHUB_OWNER`
-- `GITHUB_REPO`
-- `GITHUB_BRANCH`（可选，默认 `main`）
-
-根页面自动显示四个表格：
-
-- 亚太 IPv4
-- 亚太 IPv6
-- 美西 IPv4
-- 美西 IPv6
-
-另外提供：
-
-```text
-/health
-/api/status
-/raw/apac/ipv4
-/raw/apac/ipv6
-/raw/west/ipv4
-/raw/west/ipv6
-/raw/all/best20
+```yaml
+- ./ranges:/app/ranges:ro
 ```
 
-其中 `/raw/...` 直接返回 TXT，后续也可以给 CFnew / EdgeTunnel 作为 URL 来源。
+所以只需修改 TXT；想立即测试就手动执行一次 `--run-now`。
 
-## 6 小时自动运行
+## 安全说明
 
-`install.sh` 在 root + systemd 环境会安装：
-
-```text
-cf-bestip.service
-cf-bestip.timer
-```
-
-时间：每天 `00:05 / 06:05 / 12:05 / 18:05`，并随机延迟最多 120 秒，避免每次整点集中请求。
-
-查看：
-
-```bash
-systemctl status cf-bestip.timer
-journalctl -u cf-bestip.service -n 200 --no-pager
-```
-
-手动跑：
-
-```bash
-sudo systemctl start cf-bestip.service
-```
-
-## 关于代理
-
-默认清理 `HTTP_PROXY / HTTPS_PROXY / ALL_PROXY / NO_PROXY` 环境变量，避免 CFST 被 SOCKS5/全局代理污染测试结果。如果你明确需要让测速走代理，把：
-
-```json
-"clear_proxy_env": false
-```
-
-但这样测出来的是“代理出口到 Cloudflare”的结果，不再代表本机直连质量。
+- `.env` 不要提交真实 GitHub Token。
+- 默认清除代理环境变量，减少测速误走 `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY` 的概率。
+- `network_mode: host` 是为了让 VPS 上的测速尽量代表宿主机真实出口。
+- 如果宿主机本身有 TUN/透明代理/策略路由，仍可能影响测速，应在测试时注意。

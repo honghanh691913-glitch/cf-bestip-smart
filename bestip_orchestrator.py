@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Cloudflare BestIP Orchestrator v1.0.0
+"""Cloudflare BestIP Smart Orchestrator v1.1.0
 
 A thin orchestration/publishing layer around XIU2/CloudflareSpeedTest.
 - Per-CIDR split/random probing: 4 IPs x up to 3 rounds.
@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import base64
 import csv
+import fcntl
 import datetime as dt
 import hashlib
 import ipaddress
@@ -34,8 +35,8 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
-VERSION = "1.0.0"
-UA = f"cf-bestip-orchestrator/{VERSION}"
+VERSION = "1.1.0"
+UA = f"cf-bestip-smart/{VERSION}"
 ROOT = Path(__file__).resolve().parent
 
 EMBEDDED_CF_IPV4 = [
@@ -134,6 +135,34 @@ def official_ranges(family: str, cfg: Dict[str, Any]) -> List[str]:
     return list(fallback)
 
 
+def load_cidr_file(path_value: str, family: str) -> List[str]:
+    path = Path(path_value)
+    if not path.is_absolute():
+        path = ROOT / path
+    if not path.exists():
+        raise ConfigError(f"CIDR 文件不存在: {path}")
+    want_ver = 4 if family == "ipv4" else 6
+    out: List[str] = []
+    seen: Set[str] = set()
+    for line_no, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        try:
+            net = ipaddress.ip_network(line, strict=False)
+        except Exception as e:
+            raise ConfigError(f"CIDR 文件 {path}:{line_no} 无效: {line} ({e})")
+        if net.version != want_ver:
+            raise ConfigError(f"CIDR 文件 {path}:{line_no} 地址族错误: {line}")
+        text = str(net)
+        if text not in seen:
+            seen.add(text)
+            out.append(text)
+    if not out:
+        raise ConfigError(f"CIDR 文件为空: {path}")
+    return out
+
+
 def expand_groups(names: Sequence[str], groups: Dict[str, List[str]]) -> Set[str]:
     out: Set[str] = set()
     for name in names or []:
@@ -166,8 +195,18 @@ def colo_eligible(colo: str, pool_cfg: Dict[str, Any], cfg: Dict[str, Any]) -> b
 def cidrs_for(pool_cfg: Dict[str, Any], family: str, cfg: Dict[str, Any]) -> List[str]:
     fam = pool_cfg.get(family, {})
     source = fam.get("source", "official")
-    custom = [x.strip() for x in fam.get("cidrs", []) if str(x).strip()]
-    if source == "custom":
+    custom = [str(x).strip() for x in fam.get("cidrs", []) if str(x).strip()]
+    default_file = cfg.get("range_files", {}).get(family, f"ranges/{family}.txt")
+    file_value = str(fam.get("file") or default_file)
+    if source == "file":
+        ranges = load_cidr_file(file_value, family)
+    elif source == "file_or_official":
+        try:
+            ranges = load_cidr_file(file_value, family)
+        except Exception as e:
+            print(f"[WARN] 本地 CIDR 文件不可用，回退官方段: {e}")
+            ranges = official_ranges(family, cfg)
+    elif source == "custom":
         ranges = custom
     elif source == "custom_or_official":
         ranges = custom or official_ranges(family, cfg)
@@ -175,13 +214,17 @@ def cidrs_for(pool_cfg: Dict[str, Any], family: str, cfg: Dict[str, Any]) -> Lis
         ranges = official_ranges(family, cfg)
     else:
         raise ConfigError(f"未知 CIDR source: {source}")
-    out = []
+    out: List[str] = []
+    seen: Set[str] = set()
     want_ver = 4 if family == "ipv4" else 6
     for raw in ranges:
         net = ipaddress.ip_network(raw, strict=False)
         if net.version != want_ver:
             raise ConfigError(f"{family} 配置中出现错误地址族: {raw}")
-        out.append(str(net))
+        text = str(net)
+        if text not in seen:
+            seen.add(text)
+            out.append(text)
     return out
 
 
@@ -372,6 +415,7 @@ def discover_candidates(pool_name: str, family: str, pool_cfg: Dict[str, Any], c
     cidrs = cidrs_for(pool_cfg, family, cfg)
     nets = [ipaddress.ip_network(x, strict=False) for x in cidrs]
     tried: Dict[str, Set[str]] = {str(n): set() for n in nets}
+    global_tried: Set[str] = set()
     active: Set[str] = set()
     pending: Set[str] = {str(n) for n in nets}
     collected: Dict[str, Result] = {}
@@ -385,7 +429,15 @@ def discover_candidates(pool_name: str, family: str, pool_cfg: Dict[str, Any], c
         owner: Dict[str, str] = {}
         for cidr in sorted(pending):
             net = ipaddress.ip_network(cidr, strict=False)
-            picks = sample_from_net(net, probe_n, rng, tried[cidr])
+            raw_picks = sample_from_net(net, probe_n * 3, rng, tried[cidr])
+            picks = []
+            for ip in raw_picks:
+                if ip in global_tried:
+                    continue
+                global_tried.add(ip)
+                picks.append(ip)
+                if len(picks) >= probe_n:
+                    break
             segment_stats[cidr]["attempted"] += len(picks)
             for ip in picks:
                 candidates.append(ip)
@@ -407,7 +459,7 @@ def discover_candidates(pool_name: str, family: str, pool_cfg: Dict[str, Any], c
 
     # Any CIDR that failed all admission rounds is dropped here.
     if not active:
-        return [], {"cidrs": cidrs, "segments": segment_stats, "active_segments": 0, "candidate_count": 0}
+        return [], {"cidrs": cidrs, "cidr_count": len(cidrs), "segments": segment_stats, "active_segments": 0, "candidate_count": 0}
 
     # Fill candidate pool from active CIDRs only. Non-eligible colo never counts toward target.
     fill_round = 0
@@ -417,7 +469,15 @@ def discover_candidates(pool_name: str, family: str, pool_cfg: Dict[str, Any], c
         owner = {}
         for cidr in sorted(active):
             net = ipaddress.ip_network(cidr, strict=False)
-            picks = sample_from_net(net, fill_n, rng, tried[cidr])
+            raw_picks = sample_from_net(net, fill_n * 3, rng, tried[cidr])
+            picks = []
+            for ip in raw_picks:
+                if ip in global_tried:
+                    continue
+                global_tried.add(ip)
+                picks.append(ip)
+                if len(picks) >= fill_n:
+                    break
             segment_stats[cidr]["attempted"] += len(picks)
             for ip in picks:
                 candidates.append(ip)
@@ -440,6 +500,7 @@ def discover_candidates(pool_name: str, family: str, pool_cfg: Dict[str, Any], c
     quick_rank = sorted(collected.values(), key=lambda r: (r.loss, r.latency_ms, r.ip))
     return quick_rank[:target], {
         "cidrs": cidrs,
+        "cidr_count": len(cidrs),
         "segments": segment_stats,
         "active_segments": len(active),
         "candidate_count": min(len(quick_rank), target),
@@ -501,7 +562,7 @@ def build_outputs(all_ranked: Dict[Tuple[str, str], List[Result]], meta: Dict[st
     files["output/all/best20.csv"] = csv_text(all_top, updated_at, port).encode()
     status = {
         "ok": True,
-        "project": "cf-bestip-orchestrator",
+        "project": "cf-bestip-smart",
         "version": VERSION,
         "updated_at": updated_at,
         "selection": {"top_n_each": top_n, "total": len(all_top), "port": port},
@@ -538,9 +599,9 @@ def gh_request(method: str, url: str, token: str, data: Optional[Dict[str, Any]]
 
 def github_atomic_publish(files: Dict[str, bytes], cfg: Dict[str, Any], message: str) -> str:
     gh = cfg.get("github", {})
-    owner = gh.get("owner", "").strip()
-    repo = gh.get("repo", "").strip()
-    branch = gh.get("branch", "main").strip() or "main"
+    owner = os.environ.get("GITHUB_OWNER", gh.get("owner", "")).strip()
+    repo = os.environ.get("GITHUB_REPO", gh.get("repo", "")).strip()
+    branch = os.environ.get("GITHUB_BRANCH", gh.get("branch", "main")).strip() or "main"
     token_env = gh.get("token_env", "GITHUB_TOKEN")
     token = os.environ.get(token_env, "").strip()
     if not owner or not repo:
@@ -562,6 +623,9 @@ def github_atomic_publish(files: Dict[str, bytes], cfg: Dict[str, Any], message:
         entries.append({"path": path, "mode": "100644", "type": "blob", "sha": blob["sha"]})
 
     tree = gh_request("POST", f"{api}/repos/{owner}/{repo}/git/trees", token, {"base_tree": base_tree, "tree": entries})
+    if tree.get("sha") == base_tree:
+        print("[INFO] GitHub 结果与上一版完全一致，不创建重复 commit")
+        return parent_sha
     new_commit = gh_request("POST", f"{api}/repos/{owner}/{repo}/git/commits", token, {
         "message": message, "tree": tree["sha"], "parents": [parent_sha]
     })
@@ -575,6 +639,13 @@ def validate_config(cfg: Dict[str, Any]) -> None:
     for name in ["apac", "west"]:
         if name not in cfg.get("pools", {}):
             raise ConfigError(f"缺少 pools.{name}")
+    # 预先验证所有启用池的 CIDR 来源，避免跑到一半才发现文件错误。
+    for name in ["apac", "west"]:
+        pcfg = cfg["pools"][name]
+        if not bool(pcfg.get("enabled", True)):
+            continue
+        for family in ["ipv4", "ipv6"]:
+            cidrs_for(pcfg, family, cfg)
     top_n = int(cfg.get("selection", {}).get("top_n", 5))
     target = int(cfg.get("discovery", {}).get("candidate_target", 255))
     final_n = int(cfg.get("cfst", {}).get("final_download_candidates", 200))
@@ -596,7 +667,8 @@ def run_once(cfg: Dict[str, Any], dry_run: bool = False) -> int:
     runtime_root.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="bestip-", dir=str(runtime_root)) as td:
         workdir = Path(td)
-        for pool_name in ["apac", "west"]:
+        enabled_pools = [p for p in ["apac", "west"] if bool(cfg["pools"][p].get("enabled", True))]
+        for pool_name in enabled_pools:
             pool_cfg = cfg["pools"][pool_name]
             meta[pool_name] = {}
             for family in ["ipv4", "ipv6"]:
@@ -612,7 +684,7 @@ def run_once(cfg: Dict[str, Any], dry_run: bool = False) -> int:
                 }
                 print(f"[{pool_name}/{family}] 最终合格={len(ranked)}，Top={min(len(ranked), top_n)}")
 
-        missing = [(p, f) for p in ["apac", "west"] for f in ["ipv4", "ipv6"] if len(ranked_map.get((p, f), [])) < top_n]
+        missing = [(p, f) for p in enabled_pools for f in ["ipv4", "ipv6"] if len(ranked_map.get((p, f), [])) < top_n]
         if missing and require_all:
             print("\n[ABORT] 以下池不足 Top N，本轮不发布，GitHub 保留上一版:")
             for p, f in missing:
@@ -623,16 +695,38 @@ def run_once(cfg: Dict[str, Any], dry_run: bool = False) -> int:
 
         files = build_outputs(ranked_map, meta, cfg, updated_at)
         stage = ROOT / "generated"
-        if stage.exists():
-            shutil.rmtree(stage)
+        stage.mkdir(parents=True, exist_ok=True)
+        # generated may be a Docker bind mount: clear children, never delete mount root.
+        for child in list(stage.iterdir()):
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink(missing_ok=True)
         write_local_outputs(files, stage)
         print(f"\n[OK] 本地结果已生成: {stage}")
 
-        if dry_run or not bool(cfg.get("github", {}).get("enabled", False)):
-            print("[INFO] 未发布 GitHub（dry-run 或 github.enabled=false）")
-            return 0
-        sha = github_atomic_publish(files, cfg, f"BestIP auto update {updated_at}")
-        print(f"[OK] GitHub 原子提交完成: {sha}")
+        gh_cfg = cfg.get("github", {})
+        published = False
+        commit_sha = ""
+        publish_env = os.environ.get("GITHUB_PUBLISH_ENABLED")
+        if publish_env is None:
+            github_enabled = bool(gh_cfg.get("enabled", False))
+        else:
+            github_enabled = publish_env.strip().lower() in {"1", "true", "yes", "y", "on"}
+        if dry_run or not github_enabled:
+            print("[INFO] 未发布 GitHub（dry-run 或 GitHub 发布未启用）")
+        else:
+            token_env = gh_cfg.get("token_env", "GITHUB_TOKEN")
+            if not os.environ.get(token_env, "").strip() and bool(gh_cfg.get("skip_if_token_missing", True)):
+                print(f"[WARN] {token_env} 未设置：本地结果已生成，本轮跳过 GitHub 发布")
+            else:
+                commit_sha = github_atomic_publish(files, cfg, f"BestIP auto update {updated_at}")
+                published = True
+                print(f"[OK] GitHub 原子提交完成: {commit_sha}")
+        save_json(ROOT / "runtime" / "last-success.json", {
+            "ok": True, "version": VERSION, "updated_at": updated_at,
+            "published": published, "commit": commit_sha, "file_count": len(files)
+        })
         return 0
 
 
@@ -662,8 +756,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Cloudflare BestIP Orchestrator")
     ap.add_argument("--config", default=str(ROOT / "config.json"))
     ap.add_argument("--dry-run", action="store_true", help="测速并生成本地文件，但不发布 GitHub")
+    ap.add_argument("--run-now", action="store_true", help="兼容快捷命令；立即运行一轮（默认行为本来就是立即运行）")
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--version", action="store_true")
+    ap.add_argument("--lock-file", default=os.environ.get("BESTIP_LOCK_FILE", "/tmp/cf-bestip-smart.lock"))
     args = ap.parse_args()
     if args.version:
         print(VERSION)
@@ -671,8 +767,16 @@ def main() -> int:
     if args.self_test:
         return self_test()
     try:
-        cfg = load_json(Path(args.config))
-        return run_once(cfg, dry_run=args.dry_run)
+        lock_path = Path(args.lock_file)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+") as lock_fp:
+            try:
+                fcntl.flock(lock_fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print(f"[INFO] 已有一轮测速正在运行，跳过本次: {lock_path}")
+                return 75
+            cfg = load_json(Path(args.config))
+            return run_once(cfg, dry_run=args.dry_run)
     except KeyboardInterrupt:
         print("\n已取消")
         return 130

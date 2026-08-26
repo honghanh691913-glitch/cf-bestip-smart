@@ -2,7 +2,7 @@
 import json, os, platform, shutil, stat, tarfile, tempfile, urllib.request
 from pathlib import Path
 ROOT = Path(__file__).resolve().parent
-UA = "cf-bestip-orchestrator-installer/1.0.0"
+UA = "cf-bestip-smart-installer/1.1.0"
 
 def get_json(url):
     req=urllib.request.Request(url,headers={"User-Agent":UA,"Accept":"application/vnd.github+json"})
