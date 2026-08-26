@@ -1,6 +1,6 @@
-// cf-bestip-smart Worker dashboard v1.1.0
+// cf-bestip-smart Worker dashboard v1.3.0
 // Defaults point to honghanh691913-glitch/cf-bestip-smart; env vars can override.
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.3.0';
 
 function cfg(env) {
   return {

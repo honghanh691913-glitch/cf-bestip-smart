@@ -1,2 +1,2 @@
-# WEST IPv4 CIDR（预留）
-# 以后需要美西独立网段时，一行一个 CIDR 放这里，并在 config.json 启用 west。
+# WEST IPv4 CIDR
+# 一行一个你维护的美西候选 CIDR。

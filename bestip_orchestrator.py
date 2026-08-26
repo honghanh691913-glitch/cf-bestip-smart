@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Cloudflare BestIP Smart Orchestrator v1.1.0
+"""Cloudflare BestIP Smart Orchestrator v1.3.0
 
 A thin orchestration/publishing layer around XIU2/CloudflareSpeedTest.
+- Candidate CIDRs are file-only: NRT/WEST IPv4/IPv6 TXT files.
+- No official-range fallback and no hidden full-range scan.
 - Per-CIDR split/random probing: 4 IPs x up to 3 rounds.
 - Builds an eligible candidate pool (default 255) per pool/family.
 - Final benchmarks up to 200 candidates and selects Top N (default 5).
@@ -35,20 +37,9 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
-VERSION = "1.1.0"
+VERSION = "1.3.0"
 UA = f"cf-bestip-smart/{VERSION}"
 ROOT = Path(__file__).resolve().parent
-
-EMBEDDED_CF_IPV4 = [
-    "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
-    "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
-    "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
-    "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
-]
-EMBEDDED_CF_IPV6 = [
-    "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32",
-    "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",
-]
 
 DEFAULT_COLO_LABELS = {
     "NRT": "Tokyo / 东京", "KIX": "Osaka / 大阪", "HKG": "Hong Kong / 香港",
@@ -112,29 +103,6 @@ def save_json(path: Path, obj: Any) -> None:
     path.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def http_text(url: str, timeout: int = 15) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "text/plain,*/*"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read(2 * 1024 * 1024).decode("utf-8", errors="replace")
-
-
-def official_ranges(family: str, cfg: Dict[str, Any]) -> List[str]:
-    src = cfg.get("cloudflare_ranges", {})
-    live = bool(src.get("fetch_live", True))
-    url = src.get("ipv4_url" if family == "ipv4" else "ipv6_url")
-    fallback = EMBEDDED_CF_IPV4 if family == "ipv4" else EMBEDDED_CF_IPV6
-    if live and url:
-        try:
-            lines = [x.strip() for x in http_text(url).splitlines() if x.strip() and not x.startswith("#")]
-            for x in lines:
-                ipaddress.ip_network(x, strict=False)
-            if lines:
-                return lines
-        except Exception as e:
-            print(f"[WARN] 获取 Cloudflare 官方 {family} 段失败，使用内置列表: {e}")
-    return list(fallback)
-
-
 def load_cidr_file(path_value: str, family: str) -> List[str]:
     path = Path(path_value)
     if not path.is_absolute():
@@ -193,27 +161,26 @@ def colo_eligible(colo: str, pool_cfg: Dict[str, Any], cfg: Dict[str, Any]) -> b
 
 
 def cidrs_for(pool_cfg: Dict[str, Any], family: str, cfg: Dict[str, Any]) -> List[str]:
+    """Return CIDRs for one pool/family.
+
+    v1.3.0 deliberately supports file-only candidate sources.  This prevents a
+    missing/empty regional file from silently falling back to Cloudflare's
+    global ranges and turning a targeted test into a full-range scan.
+    """
     fam = pool_cfg.get(family, {})
-    source = fam.get("source", "official")
-    custom = [str(x).strip() for x in fam.get("cidrs", []) if str(x).strip()]
+    source = str(fam.get("source", "file")).strip().lower()
+    if source != "file":
+        raise ConfigError(
+            f"{pool_cfg.get('label', 'pool')}/{family} source={source!r} 不允许；"
+            "最终版只允许 source=file，禁止官方全集回退"
+        )
+
     default_file = cfg.get("range_files", {}).get(family, f"ranges/{family}.txt")
-    file_value = str(fam.get("file") or default_file)
-    if source == "file":
-        ranges = load_cidr_file(file_value, family)
-    elif source == "file_or_official":
-        try:
-            ranges = load_cidr_file(file_value, family)
-        except Exception as e:
-            print(f"[WARN] 本地 CIDR 文件不可用，回退官方段: {e}")
-            ranges = official_ranges(family, cfg)
-    elif source == "custom":
-        ranges = custom
-    elif source == "custom_or_official":
-        ranges = custom or official_ranges(family, cfg)
-    elif source == "official":
-        ranges = official_ranges(family, cfg)
-    else:
-        raise ConfigError(f"未知 CIDR source: {source}")
+    file_value = str(fam.get("file") or default_file).strip()
+    if not file_value:
+        raise ConfigError(f"{pool_cfg.get('label', 'pool')}/{family} 未配置 CIDR 文件")
+
+    ranges = load_cidr_file(file_value, family)
     out: List[str] = []
     seen: Set[str] = set()
     want_ver = 4 if family == "ipv4" else 6
@@ -226,7 +193,6 @@ def cidrs_for(pool_cfg: Dict[str, Any], family: str, cfg: Dict[str, Any]) -> Lis
             seen.add(text)
             out.append(text)
     return out
-
 
 def random_ip_from_net(net: ipaddress._BaseNetwork, rng: random.Random, tried: Set[str]) -> Optional[str]:
     lo = int(net.network_address)
@@ -566,6 +532,7 @@ def build_outputs(all_ranked: Dict[Tuple[str, str], List[Result]], meta: Dict[st
         "version": VERSION,
         "updated_at": updated_at,
         "selection": {"top_n_each": top_n, "total": len(all_top), "port": port},
+        "candidate_source": "file_only",
         "pools": meta,
     }
     files["status.json"] = (json.dumps(status, ensure_ascii=False, indent=2) + "\n").encode()
@@ -636,6 +603,8 @@ def github_atomic_publish(files: Dict[str, bytes], cfg: Dict[str, Any], message:
 
 
 def validate_config(cfg: Dict[str, Any]) -> None:
+    if str(cfg.get("candidate_source", "file_only")).strip().lower() != "file_only":
+        raise ConfigError("candidate_source 必须为 file_only；最终版禁止官方全集回退")
     for name in ["apac", "west"]:
         if name not in cfg.get("pools", {}):
             raise ConfigError(f"缺少 pools.{name}")

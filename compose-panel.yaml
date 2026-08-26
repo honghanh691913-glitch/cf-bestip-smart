@@ -1,0 +1,118 @@
+name: cf-bestip-smart
+
+x-bestip-build: &bestip-build
+  context: https://github.com/honghanh691913-glitch/cf-bestip-smart.git#main
+  dockerfile: Dockerfile
+
+services:
+  bootstrap:
+    build: *bestip-build
+    image: cf-bestip-smart:fileonly-v1.3.0
+    pull_policy: build
+    container_name: cf-bestip-smart-bootstrap
+    restart: "no"
+
+    environment:
+      # github = 每次重新部署时，ranges 以 GitHub 仓库 TXT 为准并同步到宿主机。
+      # preserve = 宿主机 ranges 已存在时不覆盖。
+      RANGE_SYNC_MODE: "github"
+
+    volumes:
+      - /vol1/1000/Docker/samrt-ip:/host
+
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      set -eu
+
+      echo "[bootstrap] host=/vol1/1000/Docker/samrt-ip"
+      mkdir -p /host/ranges/NRT /host/ranges/WEST /host/generated /host/runtime
+
+      # config.json：第一次自动生成；以后保留宿主机版本，方便面板/文件管理器直接修改。
+      if [ ! -s /host/config.json ]; then
+        cp /app/defaults/config.json /host/config.json
+        echo "[bootstrap] config.json initialized from GitHub defaults"
+      else
+        echo "[bootstrap] config.json exists -> preserve local config"
+      fi
+
+      sync_ranges() {
+        src="$1"
+        dst="$2"
+        mkdir -p "$dst"
+        if [ "${RANGE_SYNC_MODE:-github}" = "github" ]; then
+          rm -f "$dst/ipv4.txt" "$dst/ipv6.txt"
+          cp "$src/ipv4.txt" "$dst/ipv4.txt"
+          cp "$src/ipv6.txt" "$dst/ipv6.txt"
+          echo "[bootstrap] synced $(basename "$dst") ranges from GitHub image"
+        else
+          [ -s "$dst/ipv4.txt" ] || cp "$src/ipv4.txt" "$dst/ipv4.txt"
+          [ -s "$dst/ipv6.txt" ] || cp "$src/ipv6.txt" "$dst/ipv6.txt"
+          echo "[bootstrap] preserved local $(basename "$dst") ranges"
+        fi
+      }
+
+      sync_ranges /app/defaults/ranges/NRT /host/ranges/NRT
+      sync_ranges /app/defaults/ranges/WEST /host/ranges/WEST
+
+      echo "[bootstrap] done"
+
+  bestip:
+    build: *bestip-build
+    image: cf-bestip-smart:fileonly-v1.3.0
+    pull_policy: build
+    container_name: cf-bestip-smart
+    restart: unless-stopped
+    init: true
+
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+
+    # 测速直接使用宿主机网络出口。
+    network_mode: host
+
+    environment:
+      TZ: Asia/Shanghai
+
+      # 默认测试阶段不写 GitHub 结果；稳定后再开启并填 Token。
+      GITHUB_PUBLISH_ENABLED: "false"
+      GITHUB_TOKEN: ""
+      GITHUB_OWNER: honghanh691913-glitch
+      GITHUB_REPO: cf-bestip-smart
+      GITHUB_BRANCH: main
+
+      # 容器每次启动先立即测速一次，再按固定时段运行。
+      RUN_ON_START: "true"
+      SCHEDULE_HOURS: "0,6,12,18"
+      SCHEDULE_MINUTE: "5"
+      RANDOM_DELAY_SECONDS: "120"
+
+    volumes:
+      # config：宿主机为主，方便随时修改；修改后只需重启容器。
+      - /vol1/1000/Docker/samrt-ip/config.json:/app/config.json:ro
+
+      # ranges：重新部署时由 bootstrap 从 GitHub TXT 同步。
+      - /vol1/1000/Docker/samrt-ip/ranges:/app/ranges:ro
+
+      # 测速结果与运行状态持久化。
+      - /vol1/1000/Docker/samrt-ip/generated:/app/generated
+      - /vol1/1000/Docker/samrt-ip/runtime:/app/runtime
+
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    healthcheck:
+      test: ["CMD", "python3", "/app/healthcheck.py"]
+      interval: 5m
+      timeout: 20s
+      retries: 3
+      start_period: 10m
+
+    stop_grace_period: 30s
