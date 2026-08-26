@@ -1,0 +1,95 @@
+{
+  "cloudflare_ranges": {
+    "fetch_live": true,
+    "ipv4_url": "https://www.cloudflare.com/ips-v4",
+    "ipv6_url": "https://www.cloudflare.com/ips-v6"
+  },
+  "cfst": {
+    "binary": "./cfst",
+    "test_url": "https://speed.cloudflare.com/__down?bytes=100000000",
+    "port": 443,
+    "threads": 200,
+    "ping_count_quick": 4,
+    "ping_count_final": 6,
+    "latency_max_ms": 350,
+    "packet_loss_max": 0.2,
+    "final_download_candidates": 200,
+    "download_seconds": 5,
+    "process_timeout_seconds": 1800,
+    "clear_proxy_env": true,
+    "debug": false
+  },
+  "discovery": {
+    "candidate_target": 255,
+    "probe_per_segment": 4,
+    "probe_rounds": 3,
+    "fill_per_active_segment": 8,
+    "max_fill_rounds": 100,
+    "backoff_seconds": 1,
+    "random_seed": null
+  },
+  "selection": {
+    "top_n": 5,
+    "min_speed_mbps": 0.0
+  },
+  "pools": {
+    "apac": {
+      "label": "亚太 / NRT",
+      "include_colos": ["NRT"],
+      "include_colo_groups": [],
+      "exclude_colos": [],
+      "exclude_colo_groups": [],
+      "allow_unknown_colo": false,
+      "ipv4": {
+        "source": "custom_or_official",
+        "cidrs": []
+      },
+      "ipv6": {
+        "source": "custom_or_official",
+        "cidrs": []
+      }
+    },
+    "west": {
+      "label": "美西",
+      "include_colos": [],
+      "include_colo_groups": ["us_west"],
+      "exclude_colos": [],
+      "exclude_colo_groups": ["apac"],
+      "allow_unknown_colo": false,
+      "ipv4": {
+        "source": "official",
+        "cidrs": []
+      },
+      "ipv6": {
+        "source": "official",
+        "cidrs": []
+      }
+    }
+  },
+  "colo_groups": {
+    "apac": ["NRT", "KIX", "HKG", "ICN", "TPE", "SIN", "BKK", "MNL", "KUL", "CGK", "SGN", "HAN", "BOM", "DEL", "MAA", "BLR", "SYD", "MEL", "BNE", "AKL", "GUM"],
+    "us_west": ["LAX", "SJC", "SEA", "PHX", "LAS", "PDX", "DEN", "SLC", "SAN"]
+  },
+  "colo_labels": {
+    "NRT": "Tokyo / 东京",
+    "KIX": "Osaka / 大阪",
+    "HKG": "Hong Kong / 香港",
+    "LAX": "Los Angeles / 洛杉矶",
+    "SJC": "San Jose / 圣何塞",
+    "SEA": "Seattle / 西雅图",
+    "PHX": "Phoenix / 凤凰城",
+    "ORD": "Chicago / 芝加哥",
+    "IAD": "Washington DC / 华盛顿",
+    "EWR": "Newark-New York / 纽约都会区"
+  },
+  "publish": {
+    "require_all_pools": true
+  },
+  "github": {
+    "enabled": false,
+    "owner": "YOUR_GITHUB_USER",
+    "repo": "YOUR_RESULT_REPO",
+    "branch": "main",
+    "token_env": "GITHUB_TOKEN"
+  }
+}

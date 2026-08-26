@@ -1,0 +1,13 @@
+[Unit]
+Description=Cloudflare BestIP Orchestrator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=__PROJECT_DIR__
+EnvironmentFile=-/etc/cf-bestip.env
+ExecStart=/usr/bin/flock -n /run/cf-bestip.lock /usr/bin/python3 __PROJECT_DIR__/bestip_orchestrator.py --config __PROJECT_DIR__/config.json
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
