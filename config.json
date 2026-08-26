@@ -40,9 +40,7 @@
     "apac": {
       "enabled": true,
       "label": "NRT / 东京",
-      "include_colos": [
-        "NRT"
-      ],
+      "include_colos": ["NRT"],
       "include_colo_groups": [],
       "exclude_colos": [],
       "exclude_colo_groups": [],
@@ -60,13 +58,9 @@
       "enabled": false,
       "label": "美西",
       "include_colos": [],
-      "include_colo_groups": [
-        "us_west"
-      ],
+      "include_colo_groups": ["us_west"],
       "exclude_colos": [],
-      "exclude_colo_groups": [
-        "apac"
-      ],
+      "exclude_colo_groups": ["apac"],
       "allow_unknown_colo": false,
       "ipv4": {
         "source": "file",
@@ -79,40 +73,8 @@
     }
   },
   "colo_groups": {
-    "apac": [
-      "NRT",
-      "KIX",
-      "HKG",
-      "ICN",
-      "TPE",
-      "SIN",
-      "BKK",
-      "MNL",
-      "KUL",
-      "CGK",
-      "SGN",
-      "HAN",
-      "BOM",
-      "DEL",
-      "MAA",
-      "BLR",
-      "SYD",
-      "MEL",
-      "BNE",
-      "AKL",
-      "GUM"
-    ],
-    "us_west": [
-      "LAX",
-      "SJC",
-      "SEA",
-      "PHX",
-      "LAS",
-      "PDX",
-      "DEN",
-      "SLC",
-      "SAN"
-    ]
+    "apac": ["NRT","KIX","HKG","ICN","TPE","SIN","BKK","MNL","KUL","CGK","SGN","HAN","BOM","DEL","MAA","BLR","SYD","MEL","BNE","AKL","GUM"],
+    "us_west": ["LAX","SJC","SEA","PHX","LAS","PDX","DEN","SLC","SAN"]
   },
   "colo_labels": {
     "NRT": "Tokyo / 东京",
