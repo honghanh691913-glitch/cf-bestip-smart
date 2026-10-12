@@ -1681,6 +1681,8 @@ public static class LinkHubWin32 {
         (job[:repaired_names] ||= []) << label
       end
       consumed_pending = complete_soft_pending_proxy_rebuilds_for_model!(candidate[:model_id].to_s, model)
+      # v0.13.7.3：代理完成后空闲时补齐正反轴测缩略图（已是最新则直接跳过）。
+      enqueue_soft_thumbnail_views!(candidate[:model_id].to_s, reason: '六面代理完成') rescue nil if candidate[:reuse_existing] != true
       if candidate[:legacy_recovery] == true
         remaining_legacy = Array(candidate[:replace_instances]).select do |instance|
           instance && instance.valid? && soft_legacy_proxy_entity?(instance) &&

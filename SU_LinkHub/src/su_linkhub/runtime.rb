@@ -13771,6 +13771,8 @@ module GavinTools
       return false unless definition && definition.valid?
       marked = definition.get_attribute(SOFT_MODEL_DICT, 'planar_reference', false)
       return true if marked == true || soft_visual_proxy_truthy?(marked)
+      # v0.13.7.3：朝向相机的片状组件与平面图片一样直接作为代理，不生成六面代理。
+      return true if soft_definition_face_camera?(definition)
       soft_bounds_planar_reference?(soft_definition_bounds_values(definition))
     rescue StandardError
       false
@@ -24016,9 +24018,16 @@ module GavinTools
 
     # v0.13.6.188：图片格式识别/结构校验 + 缩略图显示适配，独立模块。
     Kernel.load(File.expand_path('image_media.rb', __dir__))
+    # v0.13.7.3：双轴测缩略图视图 + 刷新/反转（thumbnail_views.rb）。
+    Kernel.load(File.expand_path('thumbnail_views.rb', __dir__))
 
-    def record_soft_thumbnail!(source_path, thumb_path, root = soft_library_root, defer: false)
+    def record_soft_thumbnail!(source_path, thumb_path, root = soft_library_root, defer: false, apply_views: true)
       return false unless File.file?(source_path) && File.file?(thumb_path) && File.size(thumb_path).positive?
+      # v0.13.7.3：任何流程（内嵌缩略图提取、入库校准、旧刷新）写出标准缩略图后，若已有
+      # 有效的轴测视图，立即换成用户选定的那一张，避免“刷新后又变回背面/乱图”。
+      if apply_views && normalize_soft_library_key(thumb_path) == normalize_soft_library_key(soft_model_thumbnail_path(source_path, root))
+        apply_soft_thumbnail_preferred_view!(source_path, root, thumb_path: thumb_path, record: false) rescue nil
+      end
       data = read_soft_thumbnail_meta(root)
       data['models'] ||= {}
       data['models'][soft_model_id_for_path(source_path)] = {
@@ -25854,6 +25863,12 @@ module GavinTools
         thumbnail_files = {}
       end
 
+      view_prefs = begin
+        prefs = read_soft_thumbnail_meta(root)['view_prefs']
+        prefs.is_a?(Hash) ? prefs : {}
+      rescue StandardError
+        {}
+      end
       source_files.map do |path|
         key = normalize_soft_library_key(path)
         metadata = default_soft_model_metadata(path)
@@ -25916,6 +25931,7 @@ module GavinTools
           'thumbnail_url' => thumb.empty? ? '' : soft_thumbnail_url(thumb),
           'thumbnail_ready' => !!standard_ready,
           'merged_into' => metadata['merged_into'].to_s,
+          'thumbnail_view' => (view_prefs[soft_model_id_for_path(path)].to_s.empty? ? 'a' : view_prefs[soft_model_id_for_path(path)].to_s),
           'size_mb' => '',
           'updated_at' => metadata['updated_at'].to_s
         }
@@ -27698,8 +27714,35 @@ module GavinTools
     # 尺寸，再判断哪一根局部轴在世界中最接近竖直 Z；该轴就是高度，剩余两轴
     # 取大为长、小为宽。这样旧家具即使蓝轴横着，模型也完全不动，清单高度仍是
     # 竖直方向对应的真实尺寸；真正的组件轴归正只在家具入库/更新模型库时持久化。
+    # v0.13.7.3：朝向相机组件随镜头绕 Z 轴转动，实例/包装组件的外包盒会跟着变，
+    # 清单长宽因此忽大忽小、同款被拆成多行。改为读取朝向相机定义自身的局部尺寸 × 缩放。
+    def soft_face_camera_dimensions_mm(instance, transform)
+      definition = instance.respond_to?(:definition) ? instance.definition : nil
+      return nil unless definition && definition.valid? && soft_definition_face_camera?(definition)
+      behavior = definition.behavior rescue nil
+      unless behavior && behavior.respond_to?(:always_face_camera?) && behavior.always_face_camera?
+        child = definition.entities.to_a.find do |entity|
+          (entity.is_a?(Sketchup::ComponentInstance) || entity.is_a?(Sketchup::Group)) && soft_definition_face_camera?(entity.definition)
+        end
+        return nil unless child
+        transform = transform * child.transformation
+        definition = child.definition
+      end
+      box = definition.bounds
+      values = transform.to_a
+      scale = [0, 4, 8].map { |offset| Math.sqrt(values[offset]**2 + values[offset + 1]**2 + values[offset + 2]**2) }
+      x = box.width.to_f * scale[0] * 25.4
+      y = box.height.to_f * scale[1] * 25.4
+      z = box.depth.to_f * scale[2] * 25.4
+      [[x, y].max, [x, y].min, z].map { |value| value.round(1) }
+    rescue StandardError
+      nil
+    end
+
     def soft_instance_dimensions_mm(instance, combined_transform = nil)
       transform = combined_transform || instance.transformation
+      face_camera_dims = soft_face_camera_dimensions_mm(instance, transform)
+      return face_camera_dims if face_camera_dims
       axes = soft_effective_instance_axis_dimensions_mm(instance, transform).map { |value| value.to_f.abs }
       vote = soft_axis_alignment_vote_for_transform(transform)
       vertical_index = vote[:score].to_f >= SOFT_AXIS_ALIGNMENT_MIN_SCORE ? vote[:axis].to_i : 2
@@ -29007,6 +29050,8 @@ module GavinTools
         end
         row['thumbnail_url'] = thumb_record[:url].to_s
         row['thumbnail_path'] = thumb_record[:path].to_s
+        view_prefs = (context[:thumbnail_view_prefs] ||= (read_soft_thumbnail_meta(root)['view_prefs'] rescue nil) || {})
+        row['thumbnail_view'] = path.empty? ? '' : (view_prefs[soft_model_id_for_path(path)].to_s.empty? ? 'a' : view_prefs[soft_model_id_for_path(path)].to_s)
         row['thumbnail_ready'] = !row['thumbnail_url'].to_s.empty?
         row['materials'] = row['materials'].is_a?(Hash) ? row['materials'] : {}
         row['spaces'] = Array(row['spaces']).uniq
@@ -29024,7 +29069,7 @@ module GavinTools
     SOFT_SCHEDULE_PRIMARY_FIELDS = %w[
       row_id variant_key model_id source_path stored_source_path thumbnail_url thumbnail_path thumbnail_ready
       thumbnail_repairable library_record_found organized manufacturer price contact material_description remark
-      remark_display extra_fields recognition_name source_filename legacy_name_prefix
+      remark_display extra_fields recognition_name source_filename legacy_name_prefix thumbnail_view
     ].freeze
 
     def soft_schedule_merge_name(row)
@@ -33988,6 +34033,12 @@ module GavinTools
       rescue StandardError => e
         log_exception('返回采购清单草稿保存结果失败', e)
       end
+      dialog.add_action_callback('schedule_thumbnail_view') do |_ctx, json|
+        safe_callback('切换清单缩略图视图') do
+          data = JSON.parse(json.to_s) rescue {}
+          handle_soft_thumbnail_view_action(data['model_id'], data['action'])
+        end
+      end
       dialog.add_action_callback('repair_schedule_thumbnails') do |_ctx, json|
         safe_callback('采购清单自动补齐缩略图') { request_soft_schedule_thumbnail_repairs(json) }
       end
@@ -34932,7 +34983,12 @@ module GavinTools
                   end
           prepared[key] = thumb
         end
-        if xlsx_image_file_type(thumb, strict: true)
+        # v0.13.7.3：有 1024px 高清视图时 Excel 用高清图（点开查看更清楚）。
+        hd = soft_thumbnail_hd_path(source_path, root)
+        if !hd.empty? && xlsx_image_file_type(hd, strict: true)
+          row['thumbnail_path'] = hd
+          row['thumbnail_url'] = ''
+        elsif xlsx_image_file_type(thumb, strict: true)
           row['thumbnail_path'] = thumb
           row['thumbnail_url'] = soft_thumbnail_url(thumb)
         else
@@ -39515,7 +39571,14 @@ module GavinTools
         note_soft_thumbnail_activity!
       end
       dialog.add_action_callback('refresh_thumbnail') do |_ctx, model_id|
-        safe_callback('刷新单个缩略图') { refresh_soft_model_thumbnail(model_id) }
+        # v0.13.7.3：单张刷新改为离屏生成正反两张轴测图，不再改写源 SKP。
+        safe_callback('刷新单个缩略图') { handle_soft_thumbnail_view_action(model_id, 'refresh') }
+      end
+      dialog.add_action_callback('thumbnail_view_action') do |_ctx, json|
+        safe_callback('切换缩略图视图') do
+          data = JSON.parse(json.to_s) rescue {}
+          handle_soft_thumbnail_view_action(data['model_id'], data['action'])
+        end
       end
       dialog.add_action_callback('batch_refresh_thumbnails') do |_ctx, json|
         safe_callback('批量刷新缩略图') { start_soft_batch_thumbnail_refresh(json) }
@@ -40336,6 +40399,8 @@ module GavinTools
           item = soft_library_item(id, force: false)
           next unless item && File.file?(item['path'].to_s)
           started = monotonic_time
+          # v0.13.7.3：入库/更新后空闲时按组件轴生成正反两张轴测图（不改源 SKP）。
+          enqueue_soft_thumbnail_views!(id, reason: '入库/更新') rescue nil
           thumb = ensure_soft_model_thumbnail(item['path'].to_s, soft_library_root, force: true)
           if !thumb.to_s.empty? && File.file?(thumb)
             item['thumbnail_path'] = thumb
@@ -42761,7 +42826,17 @@ module GavinTools
         raise "入库归轴后尺寸复核失败：目标 #{expected_mm.map { |v| v.round(2) }.join(' × ')}mm，实际 #{aligned_mm.map { |v| v.round(2) }.join(' × ')}mm。已停止写库。"
       end
 
+      # v0.13.7.3：朝向相机的片状组件（always_face_camera）压平会丢掉“朝向相机”属性，
+      # 因此保留原组件作为子实例，不压平、不转六面代理，尺寸保持不变。
+      face_camera_source = soft_definition_face_camera?(entity.respond_to?(:definition) ? entity.definition : nil)
       original_wrapper = wrapper
+      flat_candidate = nil
+      if face_camera_source
+        flattened_layers = 0
+        actual_mm = aligned_mm
+        soft_set_attribute_if_changed(wrapper, SOFT_MODEL_DICT, 'face_camera', true)
+        log("朝向相机组件入库：保留原组件与朝向属性，不压平、不转代理：#{library_item['name']}")
+      else
       flat_candidate = model.definitions.add(model.definitions.unique_name("LH_软装库扁平候选_#{library_item['name']}"))
       copy_soft_definition_attribute_dictionaries!(wrapper, flat_candidate)
       flat_candidate.description = wrapper.description.to_s if flat_candidate.respond_to?(:description=) && wrapper.respond_to?(:description)
@@ -42788,7 +42863,8 @@ module GavinTools
         payload = nil
         remove_unused_definition!(original_wrapper, model) if original_wrapper && original_wrapper.valid? && original_wrapper.instances.empty? rescue nil
       end
-      planar_reference = mark_soft_planar_reference!(wrapper)
+      end
+      planar_reference = mark_soft_planar_reference!(wrapper, face_camera_source ? true : nil)
       soft_set_attribute_if_changed(wrapper, SOFT_MODEL_DICT, 'library_payload_transform_schema', 1)
       soft_set_attribute_if_changed(wrapper, SOFT_MODEL_DICT, 'library_payload_transform_json', JSON.generate(payload_transform_for_compensation.to_a.map(&:to_f)))
       soft_set_attribute_if_changed(wrapper, SOFT_MODEL_DICT, 'library_actual_axis_mm', JSON.generate(actual_mm.map { |v| v.round(4) }))

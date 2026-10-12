@@ -49,3 +49,24 @@
 - 遗留/风险：
   - 同款合并按名称判断：两个不同家具若名称、尺寸、材质完全一样也会合并（这是用户要求的规则）。
   - 单个空间统计本身仍是一次性递归（无法在空间内部切片）；如某空间特别慢，日志里会出现“采购清单单空间统计”慢记录，后续可针对性优化。
+
+## 步骤 3 — 正反轴测缩略图 + 刷新/反转 + 朝向相机组件（2026-10-12）
+
+- 版本：0.13.7.3　状态：完成（静态检查通过；渲染效果必须在 SketchUp 实测）
+- 成品：`releases/SU_LinkHub_v0.13.7.3.rbz`
+- 新文件 `src/su_linkhub/thumbnail_views.rb`（runtime.rb 在 image_media.rb 之后 Kernel.load）：
+  - 视图文件：`_软装模型管理/缩略图/<id>.view_{a|b|front}.png`（512px）与 `.hd.png`（1024px）；有效条件：视图 mtime ≥ 源 SKP mtime。
+  - 选择：缩略图索引 `缩略图索引.json` 新键 `view_prefs[<id>] = a|b|front`。
+  - `apply_soft_thumbnail_preferred_view!` 把选中视图复制成标准缩略图 `<id>.png`，所有旧读取方自动同步。
+  - 渲染 `render_soft_thumbnail_view!`：`with_soft_commit_world_context` + 可回滚 operation + 远端隔离（同六面代理），载入临时拷贝的源 SKP，`View#write_image` 白底；结束 abort 并清理临时定义。
+  - 队列 `enqueue_soft_thumbnail_views!` / `process_soft_thumbnail_view_queue_tick!`（0.4s 定时器，每拍最多一张视图；非立即任务要求世界根层 + 空闲 1.2s + 不忙）。
+  - 按钮入口 `handle_soft_thumbnail_view_action(model_id, 'flip'|'refresh'|'a'|'b')`。
+  - 朝向相机判定 `soft_definition_face_camera?`（自身或薄包装内子组件 always_face_camera）。
+- runtime.rb：`record_soft_thumbnail!` 新增 `apply_views:`（写标准图后自动换回选定视图）；入库校准定时器内排队视图；`refresh_thumbnail` 回调改为新流程；新增回调 `thumbnail_view_action`（模型库）、`schedule_thumbnail_view`（清单）；清单行与库条目带 `thumbnail_view`；Excel 优先 `soft_thumbnail_hd_path`；`build_soft_library_update_definition!` 对朝向相机源不压平并标记 `face_camera`、planar passthrough；`soft_definition_planar_reference?` 对朝向相机返回 true（不做六面代理）；新增 `soft_face_camera_dimensions_mm`，清单尺寸取朝向相机定义自身局部尺寸 × 缩放。
+- proxy_queue.rb：`finish_soft_visual_proxy_candidate_success!` 完成后排队视图。
+- UI：清单缩略图右上 ⟳/⇄ 按钮 + 左下视图标签（`data-thumb-act`）；模型库卡片 ⇄ 按钮（`data-flip-thumb`）。
+- 验证：`ruby -c` 全部通过；UI JS 检查通过；合并单测通过。没有 SketchUp，无法验证截图效果。
+- 需要用户实测确认：
+  1. 清单/模型库点 ⇄ 能否立即切换；第一次点（还没生成）会排队生成，约 1–3 秒。
+  2. 生成过程中视口是否有闪动（与六面代理相同的隔离方式）。
+  3. 朝向相机组件入库后是否仍朝向相机、清单尺寸是否稳定。
