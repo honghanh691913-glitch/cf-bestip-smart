@@ -25709,6 +25709,128 @@ module GavinTools
       item
     end
 
+    # v0.13.7.2：模型库“重复模型”。同大类、同子类、同名称（忽略 #N/全半角/空格）的多个库模型
+    # 视为疑似重复。合并 = 把被合并模型的索引记录标记 merged_into=保留模型 ID：
+    # - 模型库列表隐藏被合并模型；源 SKP、代理、缩略图都不删除，可随时“撤销合并”；
+    # - 已放置的旧实例保持原样（不改任何空间模型），清单读取时用保留模型的资料、缩略图，
+    #   因此与保留模型自动合并为同一行、数量相加。
+    def soft_library_duplicate_name_key(record)
+      name = record['name'].to_s
+      name = begin
+        name.unicode_normalize(:nfkc)
+      rescue StandardError
+        name
+      end
+      name = name.strip.sub(/\s*#\s*\d+\z/, '').gsub(/\s+/, '').downcase
+      return '' if name.empty? || name == '未命名模型'
+      [soft_library_canonical_top_category(record['category'].to_s), record['subcategory'].to_s.strip, name].join('|')
+    rescue StandardError
+      ''
+    end
+
+    def soft_library_duplicate_member(path, record, root)
+      bounds = Array(record['bounds_values']).map(&:to_f)
+      dims = if bounds.length >= 6
+               mm = bounds.each_slice(3).to_a
+               (0..2).map { |axis| ((mm[1][axis] - mm[0][axis]).abs * 25.4).round }
+             else
+               []
+             end
+      thumb = soft_model_thumbnail_path(path, root)
+      {
+        'id' => record['model_id'].to_s, 'name' => record['name'].to_s, 'category' => record['category'].to_s,
+        'subcategory' => record['subcategory'].to_s, 'path' => path.to_s, 'filename' => File.basename(path.to_s),
+        'dims_mm' => dims, 'updated_at' => record['updated_at'].to_s, 'merged_into' => record['merged_into'].to_s,
+        'thumbnail_url' => File.file?(thumb) ? soft_thumbnail_url(thumb) : ''
+      }
+    rescue StandardError
+      { 'id' => record['model_id'].to_s, 'name' => record['name'].to_s, 'path' => path.to_s }
+    end
+
+    def soft_library_duplicate_groups(root = soft_library_root)
+      index = read_soft_library_index(root)
+      groups = Hash.new { |hash, key| hash[key] = [] }
+      merged = []
+      Hash(index['models']).each do |path, record|
+        next unless record.is_a?(Hash) && !record['model_id'].to_s.strip.empty?
+        if !record['merged_into'].to_s.empty?
+          merged << soft_library_duplicate_member(path, record, root)
+          next
+        end
+        key = soft_library_duplicate_name_key(record)
+        groups[key] << soft_library_duplicate_member(path, record, root) unless key.empty?
+      end
+      list = groups.values.select { |members| members.map { |m| m['id'] }.uniq.length > 1 }
+                   .map { |members| { 'name' => members.first['name'], 'category' => members.first['category'], 'subcategory' => members.first['subcategory'], 'members' => members.sort_by { |m| m['id'] } } }
+                   .sort_by { |group| [group['category'].to_s, group['name'].to_s] }
+      { 'groups' => list, 'merged' => merged.sort_by { |m| m['name'].to_s } }
+    end
+
+    def send_soft_library_duplicates(root = soft_library_root)
+      payload = JSON.generate(soft_library_duplicate_groups(root))
+      return false unless @soft_designer_dialog && @soft_designer_dialog.visible?
+      @soft_designer_dialog.execute_script("window.SoftDesigner && window.SoftDesigner.receiveDuplicates && window.SoftDesigner.receiveDuplicates(#{payload});")
+      true
+    end
+
+    def soft_library_set_merged_into!(source_ids, target_id, root = soft_library_root)
+      wanted = Array(source_ids).map(&:to_s).reject(&:empty?).uniq - [target_id.to_s]
+      index = read_soft_library_index(root)
+      models = Hash(index['models'])
+      unless target_id.to_s.empty?
+        target = models.values.find { |record| record.is_a?(Hash) && record['model_id'].to_s == target_id.to_s }
+        raise '找不到要保留的模型，请刷新模型库后重试。' unless target
+        raise '要保留的模型本身已被合并，请先撤销它的合并。' unless target['merged_into'].to_s.empty?
+      end
+      changed = 0
+      models.each_value do |record|
+        next unless record.is_a?(Hash) && wanted.include?(record['model_id'].to_s)
+        if target_id.to_s.empty?
+          changed += 1 if record.delete('merged_into')
+          record.delete('merged_at')
+        else
+          record['merged_into'] = target_id.to_s
+          record['merged_at'] = Time.now.strftime('%Y-%m-%d %H:%M:%S')
+          changed += 1
+        end
+      end
+      # 以被合并模型为目标的旧合并链一起改指向新的保留模型，避免 A→B→C 链。
+      unless target_id.to_s.empty?
+        models.each_value do |record|
+          next unless record.is_a?(Hash) && wanted.include?(record['merged_into'].to_s)
+          record['merged_into'] = target_id.to_s
+          changed += 1
+        end
+      end
+      return 0 if changed.zero?
+      write_soft_library_index!(index, root)
+      model = Sketchup.active_model
+      if model
+        (@soft_measurement_space_row_caches || {})[model.object_id] = {}
+        mark_soft_schedule_snapshot_stale!(model)
+      end
+      @soft_library_cache = nil
+      schedule_soft_library_dialog_load(force: true)
+      changed
+    end
+
+    def merge_soft_library_duplicates(json, root = soft_library_root)
+      data = JSON.parse(json.to_s) rescue {}
+      target_id = data['target_id'].to_s
+      raise '请选择要保留的模型。' if target_id.empty?
+      count = soft_library_set_merged_into!(Array(data['source_ids']), target_id, root)
+      show_status(count.positive? ? "已合并 #{count} 个重复模型；清单刷新后自动合并为一行。" : '没有需要合并的模型。', 'success')
+      send_soft_library_duplicates(root)
+      count
+    end
+
+    def unmerge_soft_library_duplicate(model_id, root = soft_library_root)
+      count = soft_library_set_merged_into!([model_id.to_s], '', root)
+      show_status(count.positive? ? '已撤销合并，模型重新显示在模型库中。' : '该模型没有合并记录。', 'success')
+      send_soft_library_duplicates(root)
+      count
+    end
+
     def build_soft_library_items(root, files, index = nil)
       index ||= read_soft_library_index(root)
       records = index['models'] || {}
@@ -25793,6 +25915,7 @@ module GavinTools
           'thumbnail_path' => thumb,
           'thumbnail_url' => thumb.empty? ? '' : soft_thumbnail_url(thumb),
           'thumbnail_ready' => !!standard_ready,
+          'merged_into' => metadata['merged_into'].to_s,
           'size_mb' => '',
           'updated_at' => metadata['updated_at'].to_s
         }
@@ -28809,6 +28932,19 @@ module GavinTools
           end
         end
         record = entry && entry[:record]
+        # v0.13.7.2：被“重复模型”合并的库模型改用保留模型的资料与缩略图，
+        # 清单中与保留模型自然合并为一行。实例本身与 model_id 不变。
+        alias_target = record.is_a?(Hash) ? record['merged_into'].to_s : ''
+        unless alias_target.empty?
+          target_entry = context[:by_id][alias_target]
+          if target_entry && target_entry[:record].is_a?(Hash) && target_entry[:record]['merged_into'].to_s.empty?
+            row['library_alias_of'] = alias_target
+            entry = target_entry
+            record = entry[:record]
+            key = entry[:key]
+            path = entry[:path]
+          end
+        end
         metadata = default_soft_model_metadata(path)
         metadata.merge!(record) if record.is_a?(Hash)
         row['name'] = metadata['name'].to_s unless metadata['name'].to_s.empty?
@@ -28881,6 +29017,102 @@ module GavinTools
       rows
     end
 
+    # v0.13.7.2：同款合并。两次入库得到两个不同 model_id，但大类、子类、名称（忽略 #N
+    # 序号、全角/半角差异）、长宽高和材质完全一致时，清单只显示一行、数量相加。
+    # 原始 variant_key 保持不变（尺寸同步、双击定位仍靠它找实例），合并行额外携带
+    # merge_key / variant_keys / merged_model_ids；资料提交与尺寸同步会作用到全部成员。
+    SOFT_SCHEDULE_PRIMARY_FIELDS = %w[
+      row_id variant_key model_id source_path stored_source_path thumbnail_url thumbnail_path thumbnail_ready
+      thumbnail_repairable library_record_found organized manufacturer price contact material_description remark
+      remark_display extra_fields recognition_name source_filename legacy_name_prefix
+    ].freeze
+
+    def soft_schedule_merge_name(row)
+      name = row['base_name'].to_s.empty? ? row['name'].to_s : row['base_name'].to_s
+      name = begin
+        name.unicode_normalize(:nfkc)
+      rescue StandardError
+        name
+      end
+      name.strip.sub(/\s*#\s*\d+\z/, '').gsub(/\s+/, '').downcase
+    end
+
+    def soft_schedule_merge_key(row)
+      return '' unless row.is_a?(Hash)
+      name = soft_schedule_merge_name(row)
+      return '' if name.empty? || name == '未命名模型'
+      materials = row['materials'].is_a?(Hash) ? row['materials'] : {}
+      signature = materials.keys.map(&:to_s).sort.map { |key| [key, Array(materials[key]).map(&:to_s).sort] }
+      dims = %w[length_mm width_mm height_mm].map { |field| format('%.1f', row[field].to_f) }
+      ['eq', soft_library_canonical_top_category(row['category']), row['subcategory'].to_s.strip, name, dims.join('x'), JSON.generate(signature)].join('|')
+    rescue StandardError
+      ''
+    end
+
+    def soft_schedule_row_member_ids(row)
+      ids = Array(row['merged_model_ids']).map(&:to_s).reject(&:empty?)
+      ids = [row['model_id'].to_s].reject(&:empty?) if ids.empty?
+      ids
+    end
+
+    def soft_schedule_row_member_variants(row)
+      keys = Array(row['variant_keys']).map(&:to_s).reject(&:empty?)
+      keys = [row['variant_key'].to_s].reject(&:empty?) if keys.empty?
+      keys
+    end
+
+    # 把 source 的身份成员并入 target（不累加数量/空间，由调用方负责）。
+    # 主身份固定取 model_id 最小的成员，保证不同空间、不同刷新顺序得到同一主行。
+    def soft_schedule_absorb_row_identity!(target, source)
+      ids = (soft_schedule_row_member_ids(target) + soft_schedule_row_member_ids(source)).uniq.sort
+      keys = (soft_schedule_row_member_variants(target) + soft_schedule_row_member_variants(source)).uniq
+      source_id = source['model_id'].to_s
+      if !source_id.empty? && (target['model_id'].to_s.empty? || source_id < target['model_id'].to_s)
+        SOFT_SCHEDULE_PRIMARY_FIELDS.each { |field| target[field] = source[field] if source.key?(field) }
+      end
+      target['merged_model_ids'] = ids
+      target['variant_keys'] = keys
+      target['merged_model_count'] = ids.length
+      %w[in_model_identity_names recognition_hints].each do |field|
+        limit = field == 'recognition_hints' ? 5 : 8
+        target[field] = (Array(target[field]) + Array(source[field])).map(&:to_s).reject(&:empty?).uniq.first(limit)
+      end
+      target
+    end
+
+    def soft_schedule_merge_equivalent_rows(rows)
+      merged = {}
+      order = []
+      Array(rows).each do |row|
+        next unless row.is_a?(Hash)
+        merge_key = soft_schedule_merge_key(row)
+        row['merge_key'] = merge_key
+        row['variant_keys'] = soft_schedule_row_member_variants(row)
+        row['merged_model_ids'] = soft_schedule_row_member_ids(row)
+        row['merged_model_count'] = row['merged_model_ids'].length
+        group_key = merge_key.empty? ? "v:#{row['variant_key']}" : merge_key
+        target = merged[group_key]
+        unless target
+          merged[group_key] = row
+          order << group_key
+          next
+        end
+        target['quantity'] = target['quantity'].to_i + row['quantity'].to_i
+        %w[axis_alignment_required planar_reference schedule_dimensions_overridden].each do |flag|
+          target[flag] = true if row[flag] == true
+        end
+        target['materials'] = target['materials'].is_a?(Hash) ? target['materials'] : {}
+        merge_soft_material_groups!(target['materials'], row['materials'])
+        soft_schedule_absorb_row_identity!(target, row)
+      end
+      result = order.map { |key| merged[key] }
+      soft_schedule_apply_unique_display_names!(result)
+      result
+    rescue StandardError => e
+      log_exception('合并同款清单行失败', e)
+      Array(rows)
+    end
+
     def soft_measurement_rows(space_entity, space_label = '', metadata_context: nil, location_hits: nil)
       context = metadata_context.is_a?(Hash) ? metadata_context : {}
       identity_cache = context[:legacy_identity_cache] ||= {}
@@ -28889,6 +29121,7 @@ module GavinTools
       ).values
       rows.each { |row| row['spaces'] = space_label.to_s.empty? ? [] : [space_label.to_s] }
       enrich_soft_measurement_rows!(rows, metadata_context: metadata_context)
+      rows = soft_schedule_merge_equivalent_rows(rows)
       soft_schedule_sort_rows(rows)
     end
 
@@ -28915,6 +29148,8 @@ module GavinTools
         copy['space_ids'] = Array(row['space_ids']).dup
         copy['in_model_identity_names'] = Array(row['in_model_identity_names']).dup
         copy['recognition_hints'] = Array(row['recognition_hints']).dup
+        copy['variant_keys'] = Array(row['variant_keys']).dup if row.key?('variant_keys')
+        copy['merged_model_ids'] = Array(row['merged_model_ids']).dup if row.key?('merged_model_ids')
         copy['extra_fields'] = row['extra_fields'].is_a?(Hash) ? row['extra_fields'].dup : {}
         copy['materials'] = (row['materials'] || {}).each_with_object({}) do |(category, values), memo|
           memo[category] = Array(values).dup
@@ -28980,15 +29215,23 @@ module GavinTools
       merged = {}
       Array(space_rows).each do |rows|
         Array(rows).each do |source|
-          key = source['variant_key'].to_s
-          next if key.empty?
+          next if source['variant_key'].to_s.empty?
+          # v0.13.7.2：跨空间也按同款 merge_key 合并；旧缓存行没有 merge_key 时退回 variant_key。
+          merge_key = source.key?('merge_key') ? source['merge_key'].to_s : soft_schedule_merge_key(source)
+          key = merge_key.empty? ? "v:#{source['variant_key']}" : merge_key
           row = merged[key]
-          unless row
+          if row
+            soft_schedule_absorb_row_identity!(row, source)
+          else
             row = source.dup
             row['quantity'] = 0
             row['spaces'] = []
             row['space_ids'] = []
             row['materials'] = {}
+            row['merge_key'] = merge_key
+            row['variant_keys'] = soft_schedule_row_member_variants(source)
+            row['merged_model_ids'] = soft_schedule_row_member_ids(source)
+            row['merged_model_count'] = row['merged_model_ids'].length
             merged[key] = row
           end
           row['quantity'] = row['quantity'].to_i + source['quantity'].to_i
@@ -29430,7 +29673,29 @@ module GavinTools
       task_id = @soft_schedule_active_refresh_tasks[model.object_id].to_s
       return false if task_id.empty?
       row = task_center_job_snapshot(task_id)
-      row && %w[queued running].include?(row[:status].to_s)
+      running = row && %w[queued running].include?(row[:status].to_s)
+      return false unless running
+      # v0.13.7.2：任务队列显示“运行中”但实际没有任何刷新在跑（窗口关过、刷新被新刷新
+      # 顶替、定时器被 SketchUp 停掉等），以前会永远卡在 37%，再点刷新还提示“无需重复启动”。
+      # 现在发现这种“僵尸任务”直接结束它，让用户可以立即重新刷新。
+      unless soft_schedule_refresh_alive?(model)
+        finish_soft_schedule_refresh_task!(model, success: false, detail: '上一次刷新已中断（没有正在运行的刷新）；可以重新刷新')
+        return false
+      end
+      true
+    rescue StandardError
+      false
+    end
+
+    # 有正在执行的同步刷新，或渐进刷新最近 45 秒内仍有心跳，才算“活着”。
+    def soft_schedule_refresh_alive?(model = Sketchup.active_model)
+      return false unless model
+      key = model.object_id
+      return true if (@soft_schedule_sync_refresh_depth || {})[key].to_i.positive?
+      job = (@soft_schedule_progressive_jobs || {})[key]
+      return false unless job.is_a?(Hash)
+      last = (job[:last_tick] || job[:started]).to_f
+      (monotonic_time - last) < 45.0
     rescue StandardError
       false
     end
@@ -30823,21 +31088,79 @@ module GavinTools
       token = SecureRandom.hex(8)
       scope = Array(context[:scope])
       job = {
-        token: token, context: context, signature: signature.to_s,
+        token: token, context: context, signature: signature.to_s, scope: scope,
         included: scope.select { |record| record[:included] },
         excluded: scope.reject { |record| record[:included] },
         index: 0, spaces: [], all_rows: [], phase: 'metadata',
-        started: monotonic_time, total_started: total_started
+        started: monotonic_time, last_tick: monotonic_time, total_started: total_started
       }
       @soft_schedule_progressive_jobs[key] = job
       send_soft_schedule_progress('正在渐进刷新清单', current: 0, total: [job[:included].length, 1].max, detail: '准备家具资料索引；旧清单可继续查看', model: model)
-      timer = runtime_start_timer(0.01, true, label: 'schedule:progressive_refresh', key: "schedule:progressive_refresh:#{key}", model: model, active_model_only: true) do
-        active = @soft_schedule_progressive_jobs && @soft_schedule_progressive_jobs[key]
-        unless active.is_a?(Hash) && active[:token] == token && @soft_schedule_dialog && @soft_schedule_dialog.visible?
-          runtime_stop_timer(active[:timer]) if active.is_a?(Hash) && active[:timer]
-          @soft_schedule_progressive_jobs.delete(key) if @soft_schedule_progressive_jobs
+      job[:timer] = start_soft_schedule_progressive_timer!(model, key, token)
+      start_soft_schedule_progressive_watchdog!(model, key)
+      true
+    rescue StandardError => e
+      log_exception('启动采购清单渐进刷新失败', e)
+      false
+    end
+
+    def start_soft_schedule_progressive_timer!(model, key, token)
+      runtime_start_timer(0.01, true, label: 'schedule:progressive_refresh', key: "schedule:progressive_refresh:#{key}", model: model, active_model_only: true) do
+        run_soft_schedule_progressive_tick!(model, key, token)
+      end
+    end
+
+    # v0.13.7.2：看门狗。渐进刷新定时器若被 SketchUp 停掉（切换模型、热重载、异常），
+    # 从当前进度继续；窗口已关闭则正常结束任务，绝不留下“运行中”的僵尸任务。
+    def start_soft_schedule_progressive_watchdog!(model, key)
+      runtime_start_timer(5.0, true, label: 'schedule:progressive_watchdog', key: "schedule:progressive_watchdog:#{key}", model: model) do
+        job = (@soft_schedule_progressive_jobs || {})[key]
+        unless job.is_a?(Hash)
+          runtime_stop_timer(runtime_timer_key_registry["schedule:progressive_watchdog:#{key}"])
           next
         end
+        unless @soft_schedule_dialog && @soft_schedule_dialog.visible?
+          abandon_soft_schedule_progressive_job!(model, key, '清单窗口已关闭，刷新已取消；重新打开后会自动刷新')
+          next
+        end
+        next unless Sketchup.active_model == model
+        idle = monotonic_time - job[:last_tick].to_f
+        next if idle < 12.0
+        soft_schedule_trace("PROGRESSIVE WATCHDOG resume phase=#{job[:phase]} index=#{job[:index]} idle=#{idle.round(1)}s", model) rescue nil
+        runtime_stop_timer(job[:timer]) if job[:timer]
+        job[:last_tick] = monotonic_time
+        job[:timer] = start_soft_schedule_progressive_timer!(model, key, job[:token])
+      end
+    end
+
+    def abandon_soft_schedule_progressive_job!(model, key, detail)
+      job = (@soft_schedule_progressive_jobs || {}).delete(key)
+      runtime_stop_timer(job[:timer]) if job.is_a?(Hash) && job[:timer]
+      runtime_stop_timer(runtime_timer_key_registry["schedule:progressive_watchdog:#{key}"]) rescue nil
+      finish_soft_schedule_refresh_task!(model, success: false, detail: detail.to_s) if model
+      if model && @soft_schedule_pending_exports && (pending = @soft_schedule_pending_exports.delete(model.object_id))
+        finish_task_center_job!(pending[:task_id].to_s, success: false, stage: 'Excel 导出已取消', detail: detail.to_s)
+      end
+      true
+    rescue StandardError => e
+      log_exception('结束渐进刷新任务失败', e)
+      false
+    end
+
+    def run_soft_schedule_progressive_tick!(model, key, token)
+        active = @soft_schedule_progressive_jobs && @soft_schedule_progressive_jobs[key]
+        unless active.is_a?(Hash) && active[:token] == token
+          # 被新的刷新顶替：新任务继续使用同一个任务队列记录，这里只停掉旧定时器。
+          timer_id = runtime_timer_key_registry["schedule:progressive_refresh:#{key}"]
+          runtime_stop_timer(timer_id) if timer_id && !(active.is_a?(Hash) && active[:timer] == timer_id)
+          return
+        end
+        unless @soft_schedule_dialog && @soft_schedule_dialog.visible?
+          abandon_soft_schedule_progressive_job!(model, key, '清单窗口已关闭，刷新已取消；重新打开后会自动刷新')
+          return
+        end
+        active[:last_tick] = monotonic_time
+        scope = Array(active[:scope])
         begin
           if active[:phase] == 'metadata'
             soft_schedule_trace('PROGRESSIVE before metadata_context', model)
@@ -30845,7 +31168,7 @@ module GavinTools
             active[:phase] = active[:included].empty? ? 'finish' : 'spaces'
             soft_schedule_trace('PROGRESSIVE metadata_context ready', model)
             send_soft_schedule_progress('正在渐进刷新清单', current: 0, total: [active[:included].length, 1].max, detail: '家具资料已就绪；逐空间统计', model: model)
-            next
+            return
           end
 
           if active[:phase] == 'spaces' && active[:index] < active[:included].length
@@ -30854,6 +31177,16 @@ module GavinTools
             item = record[:space] || {}
             entity = record[:entity]
             label = "#{item['number']}:#{item['name']}"
+            # 先单独一拍把“正在统计哪个空间”推到界面，再做该空间的统计；
+            # 一旦某个空间很慢，用户和日志都能看到卡在哪里。
+            unless active[:announced] == index
+              active[:announced] = index
+              send_soft_schedule_progress(
+                '正在渐进刷新清单', current: index, total: [active[:included].length, 1].max,
+                detail: "正在统计 #{index + 1}/#{active[:included].length}：#{label}", model: model
+              )
+              return
+            end
             space_started = monotonic_time
             rows = if entity && entity.valid?
                      soft_measurement_rows_cached(
@@ -30863,6 +31196,7 @@ module GavinTools
                    else
                      []
                    end
+            active[:last_tick] = monotonic_time
             active[:all_rows] << rows
             active[:spaces] << {
               'id' => item['id'].to_s, 'label' => label,
@@ -30871,12 +31205,13 @@ module GavinTools
             }
             active[:index] += 1
             soft_schedule_trace("PROGRESSIVE SPACE #{active[:index]}/#{active[:included].length} #{label} rows=#{rows.length} elapsed_ms=#{elapsed_ms(space_started)}", model)
+            log_slow_operation('采购清单单空间统计', space_started, 3000.0, "#{label} · #{rows.length} 行")
             send_soft_schedule_progress(
               '正在渐进刷新清单', current: active[:index], total: [active[:included].length, 1].max,
               detail: "#{label} · #{rows.length} 项；空间之间自动让出界面", model: model
             )
             active[:phase] = 'finish' if active[:index] >= active[:included].length
-            next
+            return
           end
 
           if active[:phase] == 'finish'
@@ -30921,7 +31256,8 @@ module GavinTools
             timer_id = active[:timer]
             @soft_schedule_progressive_jobs.delete(key)
             runtime_stop_timer(timer_id) if timer_id
-            next
+            runtime_stop_timer(runtime_timer_key_registry["schedule:progressive_watchdog:#{key}"]) rescue nil
+            return
           end
         rescue StandardError => e
           soft_schedule_trace("PROGRESSIVE ERROR #{e.class}: #{e.message}", model) rescue nil
@@ -30930,14 +31266,10 @@ module GavinTools
           timer_id = active[:timer]
           @soft_schedule_progressive_jobs.delete(key)
           runtime_stop_timer(timer_id) if timer_id
+          finish_soft_schedule_refresh_task!(model, success: false, detail: "#{e.class}: #{e.message}") rescue nil
         end
-      end
-      job[:timer] = timer
-      true
-    rescue StandardError => e
-      log_exception('启动采购清单渐进刷新失败', e)
-      false
     end
+
 
     def refresh_soft_schedule_dialog(model = Sketchup.active_model, force: false, fast_local: false)
       begin_soft_schedule_trace!(model, force: force, fast_local: fast_local)
@@ -31514,7 +31846,9 @@ module GavinTools
             rescue StandardError
               nil
             end
-            entries = Array(record[:variants][target_variant_key])
+            # v0.13.7.2：同款合并行带 variant_keys，尺寸同步作用到所有成员实例。
+            wanted_keys = ([target_variant_key] + Array(change['variant_keys']).map(&:to_s)).reject(&:empty?).uniq
+            entries = wanted_keys.flat_map { |wanted| Array(record[:variants][wanted]) }
             next if entries.empty?
             matches.concat(entries.map { |entry| entry.merge(space_id: space['id'].to_s) })
             local_space_ids << space['id'].to_s
@@ -33832,7 +34166,7 @@ module GavinTools
         order_by_space["label:#{space['label']}"] = space_index
         Array(space['rows']).each do |space_row|
           next unless space_row.is_a?(Hash)
-          key = space_row['variant_key'].to_s
+          key = soft_schedule_export_row_key(space_row)
           next if key.empty?
           per_variant[key] << [space_index, space['id'].to_s, space['label'].to_s, space_row['quantity'].to_i]
         end
@@ -33840,7 +34174,7 @@ module GavinTools
       expanded = []
       Array(rows).each_with_index do |row, row_index|
         next unless row.is_a?(Hash)
-        parts = per_variant[row['variant_key'].to_s]
+        parts = per_variant[soft_schedule_export_row_key(row)]
         if parts.empty? || parts.sum { |part| part[3] } != row['quantity'].to_i
           ids = Array(row['space_ids']).map(&:to_s)
           group = ids.map { |id| order_by_space[id] }.compact.min ||
@@ -33865,6 +34199,11 @@ module GavinTools
     rescue StandardError => e
       log_exception('按空间拆分 Excel 清单行失败', e)
       Array(rows)
+    end
+
+    def soft_schedule_export_row_key(row)
+      merge_key = row['merge_key'].to_s
+      merge_key.empty? ? "v:#{row['variant_key']}" : merge_key
     end
 
     def soft_schedule_export_sort_rows(rows)
@@ -39180,6 +39519,15 @@ module GavinTools
       end
       dialog.add_action_callback('batch_refresh_thumbnails') do |_ctx, json|
         safe_callback('批量刷新缩略图') { start_soft_batch_thumbnail_refresh(json) }
+      end
+      dialog.add_action_callback('list_duplicate_models') do |_ctx|
+        safe_callback('查找重复模型') { send_soft_library_duplicates }
+      end
+      dialog.add_action_callback('merge_duplicate_models') do |_ctx, json|
+        safe_callback('合并重复模型') { merge_soft_library_duplicates(json) }
+      end
+      dialog.add_action_callback('unmerge_duplicate_model') do |_ctx, model_id|
+        safe_callback('撤销合并重复模型') { unmerge_soft_library_duplicate(model_id) }
       end
       dialog.add_action_callback('batch_delete_models') do |_ctx, json|
         safe_callback('批量删除软装模型') { start_soft_batch_delete(json) }

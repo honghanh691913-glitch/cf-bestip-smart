@@ -70,6 +70,9 @@ src = extract_constants(RUNTIME, 'XLSX_[A-Z_]+')
 methods = extract_methods(RUNTIME, /\A(xlsx_|soft_schedule_(export|expand|sort|apply_unique|summary|category|supplemental|append|dimension_text|numeric_price|total_price|measure_export)|write_stored_zip|validate_xlsx|validate_soft_schedule_xlsx|write_soft_schedule_xlsx)/)
 ExportHarness.module_eval(src + methods.join("\n"), RUNTIME)
 
+# When loaded by another test only the helpers above are needed.
+return unless File.expand_path($PROGRAM_NAME) == File.expand_path(__FILE__)
+
 def sample_image(path, label, color, w = 512, h = 512)
   return path if File.file?(path)
   system('convert', '-size', "#{w}x#{h}", 'xc:white', '-fill', color, '-draw', "roundrectangle #{w / 6},#{h / 4} #{w * 5 / 6},#{h * 3 / 4} 30,30",
