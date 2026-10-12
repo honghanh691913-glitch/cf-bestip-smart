@@ -33811,13 +33811,81 @@ module GavinTools
       raw.to_s.strip
     end
 
+    # v0.13.7.1：Excel 空间列只显示空间名称，去掉“17:”这类编号前缀。
+    # 多空间合并行（“17:A、18:B”）逐段去前缀。内部 space 标签与缓存保持不变。
+    def soft_schedule_export_space_label(value)
+      value.to_s.split('、').map { |part| part.to_s.strip.sub(/\A(?=[^:：]*[0-9０-９])[0-9０-９A-Za-z\-_.]+\s*[:：]\s*/, '') }
+           .reject(&:empty?).uniq.join('、')
+    rescue StandardError
+      value.to_s
+    end
+
+    # v0.13.7.1：总表/分类表按空间分区。项目总行（多个空间合并）按各空间实际数量拆成
+    # 每个空间一行，便于按空间着色、排序和筛选；数量对不上时保留原合并行，绝不丢数量。
+    # 每行写入 _export_group（空间顺序号），工作表据此交替淡色底。
+    def soft_schedule_expand_rows_by_space(rows, spaces)
+      per_variant = Hash.new { |hash, key| hash[key] = [] }
+      order_by_space = {}
+      Array(spaces).each_with_index do |space, space_index|
+        next unless space.is_a?(Hash)
+        order_by_space[space['id'].to_s] = space_index
+        order_by_space["label:#{space['label']}"] = space_index
+        Array(space['rows']).each do |space_row|
+          next unless space_row.is_a?(Hash)
+          key = space_row['variant_key'].to_s
+          next if key.empty?
+          per_variant[key] << [space_index, space['id'].to_s, space['label'].to_s, space_row['quantity'].to_i]
+        end
+      end
+      expanded = []
+      Array(rows).each_with_index do |row, row_index|
+        next unless row.is_a?(Hash)
+        parts = per_variant[row['variant_key'].to_s]
+        if parts.empty? || parts.sum { |part| part[3] } != row['quantity'].to_i
+          ids = Array(row['space_ids']).map(&:to_s)
+          group = ids.map { |id| order_by_space[id] }.compact.min ||
+                  Array(row['spaces']).map { |label| order_by_space["label:#{label}"] }.compact.min || spaces.to_a.length
+          copy = row.dup
+          copy['_export_group'] = group
+          expanded << [group, row_index, copy]
+          next
+        end
+        parts.each do |space_index, space_id, label, quantity|
+          next unless quantity.positive?
+          copy = row.dup
+          copy['quantity'] = quantity
+          copy['spaces'] = [label]
+          copy['space_ids'] = [space_id]
+          copy['space_names'] = label
+          copy['_export_group'] = space_index
+          expanded << [space_index, row_index, copy]
+        end
+      end
+      expanded.sort_by { |group, row_index, _row| [group, row_index] }.map(&:last)
+    rescue StandardError => e
+      log_exception('按空间拆分 Excel 清单行失败', e)
+      Array(rows)
+    end
+
+    def soft_schedule_export_sort_rows(rows)
+      list = Array(rows)
+      return soft_schedule_sort_rows(list) unless list.any? { |row| row.is_a?(Hash) && row.key?('_export_group') }
+      list.each_with_index.group_by { |row, _index| row['_export_group'].to_i }.sort_by(&:first).flat_map do |_group, items|
+        soft_schedule_sort_rows(items.map(&:first))
+      end
+    end
+
+    def soft_schedule_export_row_groups(list)
+      Array(list).map { |row| row.is_a?(Hash) && row.key?('_export_group') ? row['_export_group'].to_i : nil }
+    end
+
     def soft_schedule_export_common(row)
       # v0.13.6.188：与网页一致，取景过小的缩略图导出“显示适配”派生图。
       thumbnail_path = soft_thumbnail_display_path(row['thumbnail_path'].to_s)
       {
         name: (row['display_name'].to_s.empty? ? row['name'].to_s : row['display_name'].to_s),
         image: (xlsx_image_file_type(thumbnail_path, strict: true) ? { 'image_path' => thumbnail_path } : '缩略图不可用'),
-        space: row['space_names'].to_s,
+        space: soft_schedule_export_space_label(row['space_names']),
         subcategory: (row['subcategory'].to_s.empty? ? soft_library_default_subcategory(row['category']) : row['subcategory'].to_s),
         quantity: row['quantity'].to_i,
         price: row['price'].to_s,
@@ -33852,7 +33920,7 @@ module GavinTools
 
     def soft_schedule_category_table(rows, category, project_name: '')
       top = soft_library_canonical_top_category(category)
-      list = soft_schedule_sort_rows(Array(rows).select { |row| soft_library_canonical_top_category(row['category']) == top })
+      list = soft_schedule_export_sort_rows(Array(rows).select { |row| soft_library_canonical_top_category(row['category']) == top })
       title = "#{top}清单"
       title = "#{title}（#{project_name}）" unless project_name.to_s.strip.empty?
       headers = []
@@ -33926,12 +33994,13 @@ module GavinTools
         end
       end
       soft_schedule_append_supplemental_photo_columns!(headers, body, list)
-      [title, headers, body]
+      [title, headers, body, soft_schedule_export_row_groups(list)]
     end
 
-    def soft_schedule_summary_table(rows, project_name: '')
-      list = soft_schedule_sort_rows(Array(rows))
+    def soft_schedule_summary_table(rows, project_name: '', title_override: nil)
+      list = soft_schedule_export_sort_rows(Array(rows))
       title = project_name.to_s.strip.empty? ? '软装总采购清单' : "软装总采购清单（#{project_name}）"
+      title = title_override.to_s unless title_override.to_s.empty?
       headers = ['序号', '空间区域', '大类', '子类', '产品名称', '产品图', '数量', '规格(L×W×H mm)', '材质描述', '单价(元)', '合价(元)', '备注']
       body = list.each_with_index.map do |row, index|
         c = soft_schedule_export_common(row)
@@ -33939,7 +34008,7 @@ module GavinTools
          c[:quantity], soft_schedule_dimension_text(row), row['material_description'].to_s, c[:price], c[:total], c[:remark]]
       end
       soft_schedule_append_supplemental_photo_columns!(headers, body, list)
-      [title, headers, body]
+      [title, headers, body, soft_schedule_export_row_groups(list)]
     end
 
     def xlsx_xml_escape(value)
@@ -34083,84 +34152,172 @@ module GavinTools
       []
     end
 
-    def xlsx_worksheet_xml(title, headers, rows, drawing_rel_id: nil)
-      title_row = [title.to_s] + Array.new([headers.length - 1, 0].max, '')
-      all_rows = [title_row, headers] + Array(rows)
-      widths = headers.each_index.map do |index|
-        header_text = headers[index].to_s
-        if %w[模型图片 产品图].include?(header_text)
-          11.0
-        elsif header_text.start_with?('实物/细节图')
-          14.0
+    # v0.13.7.1：Excel 排版。
+    # - 所有单元格默认细边框；表头灰底；标题行加大加粗。
+    # - 每个空间一段，交替淡色底（相邻空间颜色一定不同）；空间列字号略大、加粗。
+    # - 正文行高统一（有图 66pt / 含实物图 84pt / 无图 30pt），不再因为缺图或图片类型而参差。
+    # - 图片以 twoCellAnchor editAs="twoCell" 锚定在单元格内（“随单元格移动和缩放”），
+    #   WPS 与 Excel 都能正常显示，排序/筛选/调行高时图片跟着单元格走。
+    XLSX_SPACE_FILLS = %w[FFEAF2FB FFFDF0E3 FFE8F5EA FFF2ECF8 FFFCF6DA FFE5F4F4 FFFBEAF0].freeze
+    XLSX_LEFT_ALIGNED_HEADER = /备注|材质|描述|要求|面料|说明/.freeze
+    XLSX_STYLE_DEFAULT = 0
+    XLSX_STYLE_TITLE = 1
+    XLSX_STYLE_HEADER = 2
+    XLSX_STYLE_BODY_BASE = 3 # 3=居中 4=左对齐 5=空间列；之后每种底色各 3 个
+
+    def xlsx_body_style(group, kind)
+      offset = { center: 0, left: 1, space: 2 }.fetch(kind, 0)
+      return XLSX_STYLE_BODY_BASE + offset if group.nil?
+      XLSX_STYLE_BODY_BASE + 3 + ((group.to_i % XLSX_SPACE_FILLS.length) * 3) + offset
+    end
+
+    def xlsx_styles_xml
+      font = lambda do |size, bold = false|
+        "<font>#{bold ? '<b/>' : ''}<sz val=\"#{size}\"/><name val=\"微软雅黑\"/><family val=\"2\"/><charset val=\"134\"/></font>"
+      end
+      fonts = [font.call(10), font.call(16, true), font.call(10, true), font.call(11, true)]
+      fills = ['<fill><patternFill patternType="none"/></fill>', '<fill><patternFill patternType="gray125"/></fill>',
+               '<fill><patternFill patternType="solid"><fgColor rgb="FFE4E8EF"/><bgColor indexed="64"/></patternFill></fill>']
+      XLSX_SPACE_FILLS.each do |rgb|
+        fills << "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"#{rgb}\"/><bgColor indexed=\"64\"/></patternFill></fill>"
+      end
+      side = ->(name) { "<#{name} style=\"thin\"><color rgb=\"FFB8BFCC\"/></#{name}>" }
+      borders = ['<border/>', "<border>#{side.call('left')}#{side.call('right')}#{side.call('top')}#{side.call('bottom')}<diagonal/></border>"]
+      xf = lambda do |font_id, fill_id, horizontal|
+        "<xf numFmtId=\"0\" fontId=\"#{font_id}\" fillId=\"#{fill_id}\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"#{horizontal}\" vertical=\"center\" wrapText=\"1\"/></xf>"
+      end
+      xfs = [xf.call(0, 0, 'general'), xf.call(1, 0, 'center'), xf.call(2, 2, 'center'),
+             xf.call(0, 0, 'center'), xf.call(0, 0, 'left'), xf.call(3, 0, 'center')]
+      XLSX_SPACE_FILLS.each_index do |index|
+        fill_id = 3 + index
+        xfs << xf.call(0, fill_id, 'center') << xf.call(0, fill_id, 'left') << xf.call(3, fill_id, 'center')
+      end
+      "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">" \
+        "<fonts count=\"#{fonts.length}\">#{fonts.join}</fonts><fills count=\"#{fills.length}\">#{fills.join}</fills>" \
+        "<borders count=\"#{borders.length}\">#{borders.join}</borders>" \
+        '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' \
+        "<cellXfs count=\"#{xfs.length}\">#{xfs.join}</cellXfs>" \
+        '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>'
+    end
+
+    def xlsx_text_display_width(value)
+      value.to_s.split(/\r?\n/).map { |line| line.each_char.sum { |char| char.ord < 0x2E80 ? 1.0 : 2.0 } }.max.to_f
+    end
+
+    def xlsx_image_header?(header)
+      text = header.to_s
+      %w[模型图片 产品图].include?(text) || text.start_with?('实物/细节图')
+    end
+
+    def xlsx_sheet_layout(headers, rows)
+      body = Array(rows)
+      image_rows = body.select { |row| Array(row).any? { |value| xlsx_image_cell?(value) } }
+      supplemental = image_rows.any? { |row| Array(row).any? { |value| xlsx_image_cell?(value) && value['image_role'].to_s == 'supplemental' } }
+      body_height = if supplemental
+                      84.0
+                    elsif !image_rows.empty? || Array(headers).any? { |header| xlsx_image_header?(header) }
+                      66.0
+                    else
+                      30.0
+                    end
+      row_px = body_height * 96.0 / 72.0
+      widths = Array(headers).each_index.map do |index|
+        header = headers[index].to_s
+        if xlsx_image_header?(header)
+          ((row_px + 8.0) / 7.0).round(1)
         else
-          longest = all_rows.map do |row|
-            value = row[index]
-            xlsx_image_cell?(value) ? 8 : value.to_s.length
-          end.max.to_i
-          [[longest + 2, 10].max, 36].min
+          longest = ([header] + body.map { |row| value = Array(row)[index]; xlsx_image_cell?(value) ? '' : value })
+                    .map { |value| xlsx_text_display_width(value) }.max.to_f
+          [[(longest * 1.05 + 3.0).round(1), 8.0].max, 34.0].min
         end
       end
-      columns = widths.each_with_index.map do |width, index|
+      { widths: widths, body_height: body_height, row_px: row_px }
+    end
+
+    def xlsx_worksheet_xml(title, headers, rows, drawing_rel_id: nil, row_groups: nil, layout: nil)
+      layout ||= xlsx_sheet_layout(headers, rows)
+      groups = Array(row_groups)
+      title_row = [title.to_s] + Array.new([headers.length - 1, 0].max, '')
+      all_rows = [title_row, headers] + Array(rows)
+      space_column = headers.index('空间区域')
+      left_columns = headers.each_index.select { |index| headers[index].to_s.match?(XLSX_LEFT_ALIGNED_HEADER) }
+      columns = layout[:widths].each_with_index.map do |width, index|
         "<col min=\"#{index + 1}\" max=\"#{index + 1}\" width=\"#{width}\" customWidth=\"1\"/>"
       end.join
+      body_height = format('%.1f', layout[:body_height].to_f)
       row_xml = all_rows.each_with_index.map do |row, index|
         row_index = index + 1
-        style = index.zero? ? 1 : (index == 1 ? 2 : 3)
-        cells = row.each_with_index.map { |value, column| xlsx_cell_xml(value, row_index, column, style) }.join
-        image_row = index > 1 && row.any? { |value| xlsx_image_cell?(value) }
-        height_attr = if index.zero?
-                        ' ht="28" customHeight="1"'
-                      elsif index == 1
-                        ' ht="34" customHeight="1"'
-                      elsif image_row
-                        supplemental = row.any? { |value| xlsx_image_cell?(value) && value['image_role'].to_s == 'supplemental' }
-                        supplemental ? ' ht="72" customHeight="1"' : ' ht="48" customHeight="1"'
-                      else
-                        ''
-                      end
-        "<row r=\"#{row_index}\"#{height_attr}>#{cells}</row>"
+        group = index > 1 ? groups[index - 2] : nil
+        cells = Array(row).each_with_index.map do |value, column|
+          style = if index.zero?
+                    XLSX_STYLE_TITLE
+                  elsif index == 1
+                    XLSX_STYLE_HEADER
+                  elsif column == space_column
+                    xlsx_body_style(group, :space)
+                  elsif left_columns.include?(column)
+                    xlsx_body_style(group, :left)
+                  else
+                    xlsx_body_style(group, :center)
+                  end
+          xlsx_cell_xml(value, row_index, column, style)
+        end.join
+        height = index.zero? ? '36' : (index == 1 ? '30' : body_height)
+        "<row r=\"#{row_index}\" ht=\"#{height}\" customHeight=\"1\">#{cells}</row>"
       end.join
-      last_cell = "#{xlsx_column_name([headers.length - 1, 0].max)}#{[all_rows.length, 1].max}"
       last_column = xlsx_column_name([headers.length - 1, 0].max)
+      last_cell = "#{last_column}#{[all_rows.length, 1].max}"
       rel_ns = drawing_rel_id ? ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"' : ''
       drawing = drawing_rel_id ? "<drawing r:id=\"#{drawing_rel_id}\"/>" : ''
       <<~XML.delete("\n")
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"#{rel_ns}>
+          <sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>
           <dimension ref="A1:#{last_cell}"/>
           <sheetViews><sheetView workbookViewId="0"><pane ySplit="2" topLeftCell="A3" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
           <sheetFormatPr defaultRowHeight="15"/><cols>#{columns}</cols><sheetData>#{row_xml}</sheetData>
           <autoFilter ref="A2:#{last_cell}"/><mergeCells count="1"><mergeCell ref="A1:#{last_column}1"/></mergeCells>
-          <pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.2" footer="0.2"/>#{drawing}
+          <printOptions horizontalCentered="1"/>
+          <pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.2" footer="0.2"/>
+          <pageSetup paperSize="9" orientation="landscape" fitToWidth="1" fitToHeight="0"/>#{drawing}
         </worksheet>
       XML
     end
 
-    def xlsx_drawing_xml(images)
+    def xlsx_drawing_xml(images, layout = nil)
+      widths = layout ? Array(layout[:widths]) : []
+      row_px = layout ? layout[:row_px].to_f : 64.0
       anchors = Array(images).each_with_index.map do |image, index|
         col = image[:column].to_i
         row = image[:row].to_i
         rel_id = "rId#{index + 1}"
         pic_id = index + 1
         supplemental = image[:role].to_s == 'supplemental'
-        max_px = supplemental ? 86.0 : 45.0
+        # 列宽(字符) → 像素按保守的 7px/字符估算，保证图片始终落在单元格内部。
+        col_px = widths[col] ? widths[col].to_f * 7.0 : (supplemental ? 98.0 : 77.0)
+        box_px = [[col_px, row_px].min - 10.0, 16.0].max
         pixel_width = image[:pixel_width].to_f
         pixel_height = image[:pixel_height].to_f
         if pixel_width.positive? && pixel_height.positive?
-          scale = [max_px / pixel_width, max_px / pixel_height].min
-          display_width = [[(pixel_width * scale).round, 8].max, max_px.round].min
-          display_height = [[(pixel_height * scale).round, 8].max, max_px.round].min
+          scale = [box_px / pixel_width, box_px / pixel_height].min
+          display_width = [(pixel_width * scale).round, 8].max
+          display_height = [(pixel_height * scale).round, 8].max
         else
-          display_width = max_px.round
-          display_height = max_px.round
+          display_width = box_px.round
+          display_height = box_px.round
         end
-        width_emu = display_width * 9525
-        height_emu = display_height * 9525
-        offset_x = (((max_px - display_width) / 2.0) + 2.5).round * 9525
-        offset_y = (((max_px - display_height) / 2.0) + 2.5).round * 9525
+        offset_x = [((col_px - display_width) / 2.0).round, 0].max
+        offset_y = [((row_px - display_height) / 2.0).round, 0].max
+        emu = 9525
         label = supplemental ? "实物/细节图 #{pic_id}" : "模型图片 #{pic_id}"
         <<~XML.delete("\n")
-          <xdr:oneCellAnchor><xdr:from><xdr:col>#{col}</xdr:col><xdr:colOff>#{offset_x}</xdr:colOff><xdr:row>#{row}</xdr:row><xdr:rowOff>#{offset_y}</xdr:rowOff></xdr:from><xdr:ext cx="#{width_emu}" cy="#{height_emu}"/><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="#{pic_id}" name="#{xlsx_xml_escape(label)}"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="#{rel_id}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="#{width_emu}" cy="#{height_emu}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:oneCellAnchor>
+          <xdr:twoCellAnchor editAs="twoCell">
+          <xdr:from><xdr:col>#{col}</xdr:col><xdr:colOff>#{offset_x * emu}</xdr:colOff><xdr:row>#{row}</xdr:row><xdr:rowOff>#{offset_y * emu}</xdr:rowOff></xdr:from>
+          <xdr:to><xdr:col>#{col}</xdr:col><xdr:colOff>#{(offset_x + display_width) * emu}</xdr:colOff><xdr:row>#{row}</xdr:row><xdr:rowOff>#{(offset_y + display_height) * emu}</xdr:rowOff></xdr:to>
+          <xdr:pic><xdr:nvPicPr><xdr:cNvPr id="#{pic_id + 1}" name="#{xlsx_xml_escape(label)}"/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr>
+          <xdr:blipFill><a:blip r:embed="#{rel_id}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill>
+          <xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="#{display_width * emu}" cy="#{display_height * emu}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic>
+          <xdr:clientData/></xdr:twoCellAnchor>
         XML
       end.join
       "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><xdr:wsDr xmlns:xdr=\"http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">#{anchors}</xdr:wsDr>"
@@ -34303,7 +34460,8 @@ module GavinTools
       used = {}
       normalized = Array(sheets).map do |sheet|
         rows = sheet[:rows]
-        [xlsx_sheet_name(sheet[:name], used), sheet[:title].to_s, sheet[:headers], rows, xlsx_sheet_images(rows)]
+        [xlsx_sheet_name(sheet[:name], used), sheet[:title].to_s, sheet[:headers], rows, xlsx_sheet_images(rows),
+         sheet[:row_groups], xlsx_sheet_layout(sheet[:headers], rows)]
       end
       sheet_overrides = normalized.each_index.map do |index|
         "<Override PartName=\"/xl/worksheets/sheet#{index + 1}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
@@ -34318,6 +34476,14 @@ module GavinTools
       workbook_rels = normalized.each_index.map do |index|
         "<Relationship Id=\"rId#{index + 1}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet#{index + 1}.xml\"/>"
       end.join
+      # v0.13.7.1：每张表打印时重复标题+表头两行，并登记筛选区域（WPS/Excel 都识别）。
+      defined_names = normalized.each_with_index.map do |sheet, index|
+        quoted = "'#{sheet[0].to_s.gsub("'", "''")}'"
+        last_column = xlsx_column_name([Array(sheet[2]).length - 1, 0].max)
+        last_row = [Array(sheet[3]).length + 2, 2].max
+        "<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"#{index}\" hidden=\"1\">#{xlsx_xml_escape(quoted)}!$A$2:$#{last_column}$#{last_row}</definedName>" \
+          "<definedName name=\"_xlnm.Print_Titles\" localSheetId=\"#{index}\">#{xlsx_xml_escape(quoted)}!$1:$2</definedName>"
+      end.join
       styles_id = normalized.length + 1
       created_at = Time.now.utc.strftime('%Y-%m-%dT%H:%M:%SZ')
       entries = {
@@ -34325,9 +34491,9 @@ module GavinTools
         '_rels/.rels' => "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/><Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties\" Target=\"docProps/core.xml\"/><Relationship Id=\"rId3\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties\" Target=\"docProps/app.xml\"/></Relationships>",
         'docProps/core.xml' => "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><cp:coreProperties xmlns:cp=\"http://schemas.openxmlformats.org/package/2006/metadata/core-properties\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:dcterms=\"http://purl.org/dc/terms/\" xmlns:dcmitype=\"http://purl.org/dc/dcmitype/\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"><dc:creator>SU LinkHub</dc:creator><cp:lastModifiedBy>SU LinkHub</cp:lastModifiedBy><dcterms:created xsi:type=\"dcterms:W3CDTF\">#{created_at}</dcterms:created><dcterms:modified xsi:type=\"dcterms:W3CDTF\">#{created_at}</dcterms:modified></cp:coreProperties>",
         'docProps/app.xml' => "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Properties xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/extended-properties\" xmlns:vt=\"http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes\"><Application>SU LinkHub</Application><AppVersion>#{xlsx_xml_escape(EXTENSION_VERSION)}</AppVersion></Properties>",
-        'xl/workbook.xml' => "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><bookViews><workbookView xWindow=\"0\" yWindow=\"0\" windowWidth=\"24000\" windowHeight=\"12000\"/></bookViews><sheets>#{workbook_sheets}</sheets><calcPr calcId=\"191029\"/></workbook>",
+        'xl/workbook.xml' => "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><bookViews><workbookView xWindow=\"0\" yWindow=\"0\" windowWidth=\"24000\" windowHeight=\"12000\"/></bookViews><sheets>#{workbook_sheets}</sheets><definedNames>#{defined_names}</definedNames><calcPr calcId=\"191029\"/></workbook>",
         'xl/_rels/workbook.xml.rels' => "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">#{workbook_rels}<Relationship Id=\"rId#{styles_id}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/></Relationships>",
-        'xl/styles.xml' => "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><fonts count=\"3\"><font><sz val=\"10\"/><name val=\"宋体\"/></font><font><b/><sz val=\"14\"/><name val=\"宋体\"/></font><font><b/><sz val=\"10\"/><name val=\"宋体\"/></font></fonts><fills count=\"3\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/></fill><fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFF2F3F5\"/><bgColor indexed=\"64\"/></patternFill></fill></fills><borders count=\"2\"><border/><border><left style=\"thin\"><color rgb=\"FFD9DEE8\"/></left><right style=\"thin\"><color rgb=\"FFD9DEE8\"/></right><top style=\"thin\"><color rgb=\"FFD9DEE8\"/></top><bottom style=\"thin\"><color rgb=\"FFD9DEE8\"/></bottom></border></borders><cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs><cellXfs count=\"4\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/><xf numFmtId=\"0\" fontId=\"1\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf><xf numFmtId=\"0\" fontId=\"2\" fillId=\"2\" borderId=\"1\" xfId=\"0\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\" wrapText=\"1\"/></xf><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\" wrapText=\"1\"/></xf></cellXfs><cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles></styleSheet>"
+        'xl/styles.xml' => xlsx_styles_xml
       }
 
       media_index = 0
@@ -34336,13 +34502,13 @@ module GavinTools
         sheet_no = index + 1
         images = sheet[4]
         if images.empty?
-          entries["xl/worksheets/sheet#{sheet_no}.xml"] = xlsx_worksheet_xml(sheet[1], sheet[2], sheet[3])
+          entries["xl/worksheets/sheet#{sheet_no}.xml"] = xlsx_worksheet_xml(sheet[1], sheet[2], sheet[3], row_groups: sheet[5], layout: sheet[6])
           next
         end
 
-        entries["xl/worksheets/sheet#{sheet_no}.xml"] = xlsx_worksheet_xml(sheet[1], sheet[2], sheet[3], drawing_rel_id: 'rId1')
+        entries["xl/worksheets/sheet#{sheet_no}.xml"] = xlsx_worksheet_xml(sheet[1], sheet[2], sheet[3], drawing_rel_id: 'rId1', row_groups: sheet[5], layout: sheet[6])
         entries["xl/worksheets/_rels/sheet#{sheet_no}.xml.rels"] = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing\" Target=\"../drawings/drawing#{sheet_no}.xml\"/></Relationships>"
-        entries["xl/drawings/drawing#{sheet_no}.xml"] = xlsx_drawing_xml(images)
+        entries["xl/drawings/drawing#{sheet_no}.xml"] = xlsx_drawing_xml(images, sheet[6])
         image_rels = []
         images.each_with_index do |image, image_index|
           path_key = FastPath.expand(image[:path].to_s)
@@ -34606,16 +34772,28 @@ module GavinTools
         Array(row['supplemental_photos']).count { |photo| !photo.is_a?(Hash) || !xlsx_image_file_type(photo['path'].to_s, strict: true) }
       end
 
+      # v0.13.7.1：总表与分类表按空间分区（每个空间一段，交替淡色底）；
+      # 原来的“跨空间合并数量”保留在最后的“按款汇总”表，采购总数不丢失。
+      space_rows = if scope.to_sym == :current_space
+                     source_rows.map { |row| row.merge('_export_group' => 0) }
+                   else
+                     soft_schedule_expand_rows_by_space(source_rows, data['spaces'])
+                   end
       if requested == 'all'
-        title, headers, rows = soft_schedule_summary_table(source_rows, project_name: project_label)
-        sheets << { name: '总表', title: title, headers: headers, rows: rows }
+        title, headers, rows, groups = soft_schedule_summary_table(space_rows, project_name: project_label)
+        sheets << { name: '总表', title: title, headers: headers, rows: rows, row_groups: groups }
         SOFT_LIBRARY_CATEGORIES.each do |category|
-          category_title, category_headers, category_rows = soft_schedule_category_table(source_rows, category, project_name: project_label)
-          sheets << { name: category, title: category_title, headers: category_headers, rows: category_rows }
+          category_title, category_headers, category_rows, category_groups = soft_schedule_category_table(space_rows, category, project_name: project_label)
+          sheets << { name: category, title: category_title, headers: category_headers, rows: category_rows, row_groups: category_groups }
+        end
+        if scope.to_sym != :current_space
+          summary_title = project_label.to_s.strip.empty? ? '软装按款汇总（跨空间合并数量）' : "软装按款汇总（#{project_label}，跨空间合并数量）"
+          merged_title, merged_headers, merged_rows, = soft_schedule_summary_table(source_rows, project_name: project_label, title_override: summary_title)
+          sheets << { name: '按款汇总', title: merged_title, headers: merged_headers, rows: merged_rows }
         end
       else
-        category_title, category_headers, category_rows = soft_schedule_category_table(source_rows, requested, project_name: project_label)
-        sheets << { name: requested, title: category_title, headers: category_headers, rows: category_rows }
+        category_title, category_headers, category_rows, category_groups = soft_schedule_category_table(space_rows, requested, project_name: project_label)
+        sheets << { name: requested, title: category_title, headers: category_headers, rows: category_rows, row_groups: category_groups }
         suggested = "#{File.basename(suggested, '.xlsx')}_#{safe_export_filename(requested)}.xlsx"
       end
       default_dir = selected_collab_project_dir_for_state(load_state(model), model)

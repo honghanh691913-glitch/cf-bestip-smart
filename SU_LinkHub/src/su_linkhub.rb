@@ -8,7 +8,7 @@ module GavinTools
   # 会导致常量和启动方法互相覆盖，并把 runtime.rb 错指到其他插件目录。
   module SULinkHubMultiSpace
     EXTENSION_NAME = 'SU LinkHub 多空间联动' unless const_defined?(:EXTENSION_NAME, false)
-    EXTENSION_VERSION = '0.13.6.192' unless const_defined?(:EXTENSION_VERSION, false)
+    EXTENSION_VERSION = '0.13.7.1' unless const_defined?(:EXTENSION_VERSION, false)
 
     unless file_loaded?(__FILE__)
       extension = SketchupExtension.new(EXTENSION_NAME, 'su_linkhub/main')
