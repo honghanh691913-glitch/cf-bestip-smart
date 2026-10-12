@@ -1,6 +1,7 @@
-SU LinkHub v0.13.7.3
+SU LinkHub v0.13.7.4
 
-本版新增（详见 CHANGELOG_v0.13.7.3.txt / CHANGELOG_v0.13.7.2.txt / CHANGELOG_v0.13.7.1.txt / CHANGELOG_v0.13.6.192.txt / CHANGELOG_v0.13.6.191.txt / CHANGELOG_v0.13.6.190.txt）：
+本版新增（详见 CHANGELOG_v0.13.7.4.txt / CHANGELOG_v0.13.7.3.txt / CHANGELOG_v0.13.7.2.txt / CHANGELOG_v0.13.7.1.txt / CHANGELOG_v0.13.6.192.txt / CHANGELOG_v0.13.6.191.txt / CHANGELOG_v0.13.6.190.txt）：
+- 六面代理：自动任务统一 128px，主线程占用更短；任务队列显示实际生成用时。
 - 缩略图：正反两张轴测图，清单/模型库一键刷新、反转并同步；朝向相机片状组件只用正视图、不转代理。
 - 清单：同名同尺寸同材质自动合并；模型库“重复模型”一键合并；刷新不再卡在 37%。
 - Excel 导出：默认边框、按空间分区淡色底、空间名去编号并加粗、统一行高、图片随单元格移动和缩放、新增按款汇总表。
@@ -10,7 +11,7 @@ SU LinkHub v0.13.7.3
 - 发布/入库不再因个别家具缺代理而整单失败：缺代理家具以真模型随包发布，代理后台补齐。
 - 来源同步不再把正在调整的联动副本弹回；发布前复核协同组件签名，避免“显示最新但内容旧”。
 
-日志目录：%TEMP%\SU_LinkHub\logs\    主日志：SU_LinkHub_v0.13.7.3.log
+日志目录：%TEMP%\SU_LinkHub\logs\    主日志：SU_LinkHub_v0.13.7.4.log
 诊断输出：%TEMP%\SU_LinkHub\diagnostics\
 
 ----------------------------------------------------------------

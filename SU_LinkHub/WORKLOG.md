@@ -70,3 +70,11 @@
   1. 清单/模型库点 ⇄ 能否立即切换；第一次点（还没生成）会排队生成，约 1–3 秒。
   2. 生成过程中视口是否有闪动（与六面代理相同的隔离方式）。
   3. 朝向相机组件入库后是否仍朝向相机、清单尺寸是否稳定。
+
+## 步骤 4 — 六面代理主线程减负 第一阶段（2026-10-12）
+
+- 版本：0.13.7.4　状态：完成（静态检查通过）
+- 成品：`releases/SU_LinkHub_v0.13.7.4.rbz`
+- 分析结论（静态）：空闲阈值本来就很短（0.28s/0.08s），250–900s 主要是任务卡片在排队/等待退出空间时就开始计时；真正的阻塞来自 `View#write_image`、`save_copy`、纯 Ruby 双底抠图，都在主线程。真正“零卡顿”只能靠独立进程（`soft_visual_proxy_external_worker_supported?` 目前固定返回 false）。
+- 改动（proxy_queue.rb）：`begin_soft_visual_proxy_incremental_candidate_world` 自动任务统一 `SOFT_VISUAL_PROXY_BATCH_RESOLUTION`（128px），仅 `candidate[:priority]` 单款保留 192px；记录 `candidate[:active_started_at]`；`finish_soft_visual_proxy_candidate_success!` 的任务说明追加“实际生成 Ns”。
+- 下一阶段候选（未做）：改轴时复用截图（需记录轴变化矩阵）、独立 SketchUp 进程渲染试验（需用户实测）。

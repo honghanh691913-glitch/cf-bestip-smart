@@ -737,13 +737,16 @@ module GavinTools
       source_signature = soft_library_file_signature(source_path, force: true).to_s
       target = soft_visual_proxy_target_path(model_id, model_name, metadata, root)
       cache_dir = TEMP_VISUAL_PROXY_DIR
+      candidate[:active_started_at] ||= monotonic_time
       {
         candidate: candidate, source_definition: source_definition, bounds_values: values,
         model_id: model_id, model_name: model_name, metadata: metadata,
         source_path: source_path, source_signature: source_signature, target: target,
         plans: soft_visual_proxy_incremental_plans(
           values, cache_dir,
-          max_px: ((job[:scan_total].to_i > 1 || job[:total].to_i > 1) ? SOFT_VISUAL_PROXY_BATCH_RESOLUTION : SOFT_VISUAL_PROXY_RESOLUTION)
+          # v0.13.7.4：自动任务一律 128px（像素量约为 192px 的 44%，截图与抠图都更快）；
+          # 只有用户在退出确认里明确选“立即更新”的单款任务保留 192px。
+          max_px: ((candidate[:priority] == true && job[:scan_total].to_i <= 1 && job[:total].to_i <= 1) ? SOFT_VISUAL_PROXY_RESOLUTION : SOFT_VISUAL_PROXY_BATCH_RESOLUTION)
         ), images: {},
         view_index: 0, phase: :capture,
         allow_inside_space: candidate[:allow_inside_space] == true,
@@ -1701,6 +1704,10 @@ public static class LinkHubWin32 {
                  else
                    '权威代理已更新 · 当前实例无需同步'
                  end
+        if candidate[:active_started_at]
+          # v0.13.7.4：任务队列里的总耗时包含排队和“等待退出空间”；单独标出实际生成用时。
+          detail += " · 实际生成 #{(monotonic_time - candidate[:active_started_at].to_f).round}s（其余为排队/等待空闲）"
+        end
         finish_task_center_job!(task_id, success: true, stage: '六面代理完成', detail: detail)
         sync_task_center_overlay_ui!(model) rescue nil
       end
