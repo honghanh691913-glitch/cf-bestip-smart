@@ -25723,14 +25723,19 @@ module GavinTools
     # - 模型库列表隐藏被合并模型；源 SKP、代理、缩略图都不删除，可随时“撤销合并”；
     # - 已放置的旧实例保持原样（不改任何空间模型），清单读取时用保留模型的资料、缩略图，
     #   因此与保留模型自动合并为同一行、数量相加。
-    def soft_library_duplicate_name_key(record)
-      name = record['name'].to_s
+    # 名称比较键：NFKC（全角/半角统一）、去空格、忽略结尾 #N 序号、不区分大小写。
+    def soft_model_name_key(value)
+      name = value.to_s
       name = begin
         name.unicode_normalize(:nfkc)
       rescue StandardError
         name
       end
-      name = name.strip.sub(/\s*#\s*\d+\z/, '').gsub(/\s+/, '').downcase
+      name.strip.sub(/\s*#\s*\d+\z/, '').gsub(/\s+/, '').downcase
+    end
+
+    def soft_library_duplicate_name_key(record)
+      name = soft_model_name_key(record['name'])
       return '' if name.empty? || name == '未命名模型'
       [soft_library_canonical_top_category(record['category'].to_s), record['subcategory'].to_s.strip, name].join('|')
     rescue StandardError
@@ -27719,15 +27724,18 @@ module GavinTools
     def soft_face_camera_dimensions_mm(instance, transform)
       definition = instance.respond_to?(:definition) ? instance.definition : nil
       return nil unless definition && definition.valid? && soft_definition_face_camera?(definition)
-      behavior = definition.behavior rescue nil
-      unless behavior && behavior.respond_to?(:always_face_camera?) && behavior.always_face_camera?
-        child = definition.entities.to_a.find do |entity|
+      6.times do
+        behavior = definition.behavior rescue nil
+        break if behavior && behavior.respond_to?(:always_face_camera?) && behavior.always_face_camera?
+        children = definition.entities.to_a.select do |entity|
           (entity.is_a?(Sketchup::ComponentInstance) || entity.is_a?(Sketchup::Group)) && soft_definition_face_camera?(entity.definition)
         end
-        return nil unless child
-        transform = transform * child.transformation
-        definition = child.definition
+        return nil unless children.length == 1
+        transform = transform * children.first.transformation
+        definition = children.first.definition
       end
+      behavior = definition.behavior rescue nil
+      return nil unless behavior && behavior.respond_to?(:always_face_camera?) && behavior.always_face_camera?
       box = definition.bounds
       values = transform.to_a
       scale = [0, 4, 8].map { |offset| Math.sqrt(values[offset]**2 + values[offset + 1]**2 + values[offset + 2]**2) }
@@ -28982,6 +28990,8 @@ module GavinTools
           target_entry = context[:by_id][alias_target]
           if target_entry && target_entry[:record].is_a?(Hash) && target_entry[:record]['merged_into'].to_s.empty?
             row['library_alias_of'] = alias_target
+            # 资料提交必须同时写到保留模型（清单显示的是它的资料），否则修改会“丢失”。
+            row['merged_model_ids'] = (soft_schedule_row_member_ids(row) + [alias_target]).uniq.sort
             entry = target_entry
             record = entry[:record]
             key = entry[:key]
@@ -29073,13 +29083,7 @@ module GavinTools
     ].freeze
 
     def soft_schedule_merge_name(row)
-      name = row['base_name'].to_s.empty? ? row['name'].to_s : row['base_name'].to_s
-      name = begin
-        name.unicode_normalize(:nfkc)
-      rescue StandardError
-        name
-      end
-      name.strip.sub(/\s*#\s*\d+\z/, '').gsub(/\s+/, '').downcase
+      soft_model_name_key(row['base_name'].to_s.empty? ? row['name'] : row['base_name'])
     end
 
     def soft_schedule_merge_key(row)
@@ -42692,6 +42696,8 @@ module GavinTools
         child = entities.first
         break unless child.is_a?(Sketchup::ComponentInstance) || child.is_a?(Sketchup::Group)
         child_definition = redundant_shell_definition_for(child)
+        # v0.13.7.3：朝向相机组件绝不展开，否则会丢掉朝向属性。
+        break if child_definition && (child_definition.behavior.always_face_camera? rescue false)
         break unless child_definition && soft_linkhub_pure_wrapper_payload(child_definition)
         exploded = child.explode
         break unless exploded
@@ -42828,7 +42834,11 @@ module GavinTools
 
       # v0.13.7.3：朝向相机的片状组件（always_face_camera）压平会丢掉“朝向相机”属性，
       # 因此保留原组件作为子实例，不压平、不转六面代理，尺寸保持不变。
-      face_camera_source = soft_definition_face_camera?(entity.respond_to?(:definition) ? entity.definition : nil)
+      # 只有被入库的组件“自身”朝向相机时才不压平；若它是旧版本留下的包装（子组件朝向相机），
+      # 照常压平一层——子组件实例及其朝向属性会保留下来，避免每次更新多套一层包装。
+      source_definition_for_behavior = entity.respond_to?(:definition) ? entity.definition : nil
+      source_behavior = source_definition_for_behavior && source_definition_for_behavior.valid? ? (source_definition_for_behavior.behavior rescue nil) : nil
+      face_camera_source = !!(source_behavior && source_behavior.respond_to?(:always_face_camera?) && source_behavior.always_face_camera?)
       original_wrapper = wrapper
       flat_candidate = nil
       if face_camera_source
@@ -42864,7 +42874,9 @@ module GavinTools
         remove_unused_definition!(original_wrapper, model) if original_wrapper && original_wrapper.valid? && original_wrapper.instances.empty? rescue nil
       end
       end
-      planar_reference = mark_soft_planar_reference!(wrapper, face_camera_source ? true : nil)
+      face_camera_result = face_camera_source || soft_definition_face_camera?(wrapper)
+      soft_set_attribute_if_changed(wrapper, SOFT_MODEL_DICT, 'face_camera', true) if face_camera_result
+      planar_reference = mark_soft_planar_reference!(wrapper, face_camera_result ? true : nil)
       soft_set_attribute_if_changed(wrapper, SOFT_MODEL_DICT, 'library_payload_transform_schema', 1)
       soft_set_attribute_if_changed(wrapper, SOFT_MODEL_DICT, 'library_payload_transform_json', JSON.generate(payload_transform_for_compensation.to_a.map(&:to_f)))
       soft_set_attribute_if_changed(wrapper, SOFT_MODEL_DICT, 'library_actual_axis_mm', JSON.generate(actual_mm.map { |v| v.round(4) }))

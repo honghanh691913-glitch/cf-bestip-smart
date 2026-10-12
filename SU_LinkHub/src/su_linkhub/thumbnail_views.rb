@@ -97,7 +97,7 @@ module GavinTools
         return false unless definition && definition.valid?
         behavior = definition.behavior rescue nil
         return true if behavior && behavior.respond_to?(:always_face_camera?) && behavior.always_face_camera?
-        return false if depth >= 2
+        return false if depth >= 4
         # 只检查“薄包装”（入库 wrapper 通常只有 1 个子实例）；大定义直接判否，避免清单统计时逐实体遍历。
         return false if definition.entities.length > 4
         children = definition.entities.to_a

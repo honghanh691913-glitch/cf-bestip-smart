@@ -19,7 +19,7 @@ runtime = File.expand_path('../src/su_linkhub/runtime.rb', __dir__)
 src = File.readlines(runtime, encoding: 'UTF-8').each_with_index.select { |l, _| l.match?(/\A\s*SOFT_SCHEDULE_PRIMARY_FIELDS = /) }.map(&:last).first
 lines = File.readlines(runtime, encoding: 'UTF-8')
 const = lines[src..(src + 4)].join
-MergeHarness.module_eval(const + extract_methods(runtime, /\A(soft_schedule_(merge|row_member|absorb|apply_unique)|merge_soft_measurement_space_rows)/).join("\n"))
+MergeHarness.module_eval(const + extract_methods(runtime, /\A(soft_schedule_(merge|row_member|absorb|apply_unique)|soft_model_name_key|merge_soft_measurement_space_rows)/).join("\n"))
 
 def r(id, name, qty, space, dims = [1400, 500, 420], mats = { '木' => ['深棕'] })
   { 'model_id' => id, 'variant_key' => "#{id}|#{dims.join('|')}", 'name' => name, 'base_name' => name, 'category' => '家具',
