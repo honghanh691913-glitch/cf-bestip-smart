@@ -78,3 +78,15 @@
 - 分析结论（静态）：空闲阈值本来就很短（0.28s/0.08s），250–900s 主要是任务卡片在排队/等待退出空间时就开始计时；真正的阻塞来自 `View#write_image`、`save_copy`、纯 Ruby 双底抠图，都在主线程。真正“零卡顿”只能靠独立进程（`soft_visual_proxy_external_worker_supported?` 目前固定返回 false）。
 - 改动（proxy_queue.rb）：`begin_soft_visual_proxy_incremental_candidate_world` 自动任务统一 `SOFT_VISUAL_PROXY_BATCH_RESOLUTION`（128px），仅 `candidate[:priority]` 单款保留 192px；记录 `candidate[:active_started_at]`；`finish_soft_visual_proxy_candidate_success!` 的任务说明追加“实际生成 Ns”。
 - 下一阶段候选（未做）：改轴时复用截图（需记录轴变化矩阵）、独立 SketchUp 进程渲染试验（需用户实测）。
+
+## 步骤 5 — 清单窗口布局 + 审查修正（2026-10-12）
+
+- 版本：0.13.7.5　状态：完成
+- 成品：`releases/SU_LinkHub_v0.13.7.5.rbz`
+- 布局（`ui/soft_schedule.html`，提交 754cc0d）：顶部主按钮 刷新/导出 Excel + 分类选择；“诊断 ▾”菜单（加载日志、提交报告）；底部粘性提交条（`提交资料修改`/`同步规格到模型`/`查看待提交`，沿用原按钮 id 与处理函数）；空间胶囊页签（数量、去编号）；状态筛选小按钮；模型变化黄色提示条。回调名称与 `window.SoftSchedule` 接口不变。
+- 预览工具：`dev/schedule_preview.html`（浏览器里用模拟数据打开清单窗口，`?mode=drafts` 显示草稿/模型变化状态）。
+- 审查修正（提交 3aca403 及本步）：
+  - 别名行 `merged_model_ids` 加入保留模型 ID → 资料同时写保留模型；`applyResult` 中 `x:` 失败时保留对应草稿并显示原因。
+  - 朝向相机：仅当被入库组件自身 always_face_camera 时不压平；压平循环绝不展开朝向相机子组件；`soft_face_camera_dimensions_mm` 穿过最多 6 层单子组件包装；`soft_definition_face_camera?` 深度 4。
+  - 名称比较统一为 `soft_model_name_key`（清单合并与重复模型共用）。
+- 审查结论：风险 6/10（中），建议在 SketchUp 中实测后发布。
