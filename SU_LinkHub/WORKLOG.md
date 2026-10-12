@@ -90,3 +90,10 @@
   - 朝向相机：仅当被入库组件自身 always_face_camera 时不压平；压平循环绝不展开朝向相机子组件；`soft_face_camera_dimensions_mm` 穿过最多 6 层单子组件包装；`soft_definition_face_camera?` 深度 4。
   - 名称比较统一为 `soft_model_name_key`（清单合并与重复模型共用）。
 - 审查结论：风险 6/10（中），建议在 SketchUp 中实测后发布。
+
+## 步骤 6 — 缩略图去掉正反面文字（2026-10-12）
+
+- 版本：0.13.7.6　状态：完成
+- 用户反馈：没有绝对的正面/反面，用户选的那一面就是正面；只需要反转图标，不要文字。
+- 改动：`soft_schedule.html` 删除 `.thumb-view-tag` 标签和 `viewName`；按钮提示改为中性说明；`soft_designer.html` 提示同步修改；`thumbnail_views.rb` 删除 `SOFT_THUMBNAIL_VIEW_LABELS`，状态提示改为“已反转/已更新”。内部视图键 a/b/front 不变（数据兼容）。
+- 验证：`ruby -c`、UI JS 检查通过。

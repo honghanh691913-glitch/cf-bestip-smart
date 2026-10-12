@@ -28,7 +28,6 @@ module GavinTools
         'b' => [-1.0, 1.0, 1.0],
         'front' => [0.0, -1.0, 0.0]
       }.freeze
-      SOFT_THUMBNAIL_VIEW_LABELS = { 'a' => '正面轴测', 'b' => '反面轴测', 'front' => '正视图' }.freeze
       SOFT_THUMBNAIL_VIEW_IDLE_SECONDS = 1.2
 
       def soft_thumbnail_view_path(source_path, view, root = soft_library_root, hd: false)
@@ -336,7 +335,7 @@ module GavinTools
         write_soft_thumbnail_view_pref!(source_path, view, root) if SOFT_THUMBNAIL_VIEW_EYES.key?(view) && view != soft_thumbnail_view_pref(source_path, root)
         if apply_soft_thumbnail_preferred_view!(source_path, root)
           send_soft_thumbnail_view_update!(item, source_path, root)
-          show_status("“#{item['name']}”缩略图已更新为#{SOFT_THUMBNAIL_VIEW_LABELS[soft_thumbnail_effective_view(source_path, root)]}。", 'success') if job[:notify]
+          show_status("“#{item['name']}”缩略图已更新。", 'success') if job[:notify]
         end
       rescue StandardError => e
         log_exception("生成缩略图视图失败：#{job && job[:id]}", e)
@@ -386,11 +385,11 @@ module GavinTools
         case action.to_s
         when 'refresh'
           enqueue_soft_thumbnail_views!(item['id'], reason: '用户刷新', immediate: true, notify: true, force: true)
-          show_status("正在按组件轴重新生成“#{item['name']}”的正反两张轴测图…", 'info')
+          show_status("正在按组件轴重新生成“#{item['name']}”的缩略图…", 'info')
           return { 'ok' => true, 'queued' => true, 'view' => current }
         when 'flip', 'a', 'b'
           if current == 'front'
-            show_status('朝向相机的片状组件只使用正视图，不需要反转。', 'info')
+            show_status('朝向相机的片状组件只有一个朝向，不需要反转。', 'info')
             return { 'ok' => true, 'view' => current }
           end
           target = %w[a b].include?(action.to_s) ? action.to_s : (current == 'a' ? 'b' : 'a')
@@ -398,11 +397,11 @@ module GavinTools
             write_soft_thumbnail_view_pref!(source_path, target, root)
             apply_soft_thumbnail_preferred_view!(source_path, root)
             send_soft_thumbnail_view_update!(item, source_path, root)
-            show_status("“#{item['name']}”缩略图已切换为#{SOFT_THUMBNAIL_VIEW_LABELS[target]}；模型库与清单同步。", 'success')
+            show_status("“#{item['name']}”缩略图已反转；模型库与清单同步。", 'success')
             return { 'ok' => true, 'view' => target }
           end
           enqueue_soft_thumbnail_views!(item['id'], reason: '用户反转', immediate: true, apply_view: target, notify: true)
-          show_status("正在生成“#{item['name']}”的#{SOFT_THUMBNAIL_VIEW_LABELS[target]}…", 'info')
+          show_status("正在生成“#{item['name']}”反转后的缩略图…", 'info')
           { 'ok' => true, 'queued' => true, 'view' => current }
         else
           raise "未知缩略图操作：#{action}"
