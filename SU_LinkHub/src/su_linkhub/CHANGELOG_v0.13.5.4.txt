@@ -1,0 +1,9 @@
+SU LinkHub v0.13.5.4
+
+建筑卡片悬停根因修复
+- 根因不是图标资源，而是同一鼠标移动由 Overlay 与临时点击 Tool 使用了两套不同的行命中逻辑：点击 Tool 会识别建筑行，Overlay 却只调用 drawer_row_at（室内），因此会把刚建立的 architecture hover 状态清空。
+- 原生 tooltip 没有在 hover 丢失时清空，所以会出现“提示文字还在、图标已经不绘制”的假象。
+- Overlay 现统一按 architecture_row_at || drawer_row_at 解析行，与 hit_action/update_tool_pointer 完全一致。
+- 建筑卡片悬停绘制恢复 v0.13.3.2 已验证稳定的 drawer_control 单源路径，撤销 v0.13.4 引入的动态 rect 二次实现，避免命中坐标和绘制坐标两套逻辑再次漂移。
+- 无命中目标时主动清空 tooltip，避免旧提示残留误导。
+- 室内、采购清单双向联动、尺寸缩放、按“分类-名称”分组、Excel 内嵌模型图等 v0.13.5 功能保持不变。

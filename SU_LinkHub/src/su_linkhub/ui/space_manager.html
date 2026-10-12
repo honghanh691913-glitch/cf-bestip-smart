@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>空间管理</title>
+<style>
+:root{color-scheme:light;--bg:#f4f6f9;--card:#fff;--line:#e5e9f0;--text:#1f2937;--sub:#667085;--blue:#3478f6;--red:#d92d20;--green:#1f9d68;--amber:#b7791f}
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text)}body{padding:18px}.shell{max-width:980px;margin:0 auto}.head{display:flex;justify-content:space-between;gap:16px;margin-bottom:14px}.title{font-size:21px;font-weight:800}.meta{font-size:12px;color:var(--sub);margin-top:5px}button{height:32px;border:1px solid #d7dce5;background:#fff;color:#344054;border-radius:10px;padding:0 12px;font-weight:650;cursor:pointer}button:disabled{opacity:.42;cursor:default}.primary{border-color:var(--blue);background:var(--blue);color:#fff}.danger{border-color:#f1c4c0;color:var(--red);background:#fff8f7}.small{height:28px;border-radius:8px;padding:0 9px;font-size:12px}.banner{background:#eef4ff;border:1px solid #d8e5ff;color:#38527b;border-radius:12px;padding:10px 12px;font-size:12px;line-height:1.55;margin-bottom:12px}.banner.warn{background:#fff7e8;border-color:#f7ddb0;color:#7b571b}.banner.error{background:#fff0ef;border-color:#f2c5c0;color:#9b2c24}.card{background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:0 6px 22px rgba(25,38,60,.05);overflow:hidden;margin-bottom:14px}.card-title{display:flex;align-items:center;justify-content:space-between;padding:13px 15px;border-bottom:1px solid var(--line);font-size:14px;font-weight:760}.count{font-size:12px;color:var(--sub)}.list{max-height:430px;overflow:auto}.group{border-bottom:1px solid #eef1f5}.group-head{position:relative;display:flex;align-items:center;gap:8px;padding:9px 14px 11px;font-weight:760;cursor:pointer;overflow:hidden;background:var(--group-bg,#eef3fa);border-left:3px solid var(--group-accent,#8fa9cc);transition:background .12s,border-color .12s}.group-head:hover{background:var(--group-hover,#e7eef8)}.group-head .status-mix-bar{position:absolute;left:8px;right:8px;bottom:1px;height:3px;border-radius:2px;background:var(--group-bar,transparent);opacity:.96;pointer-events:none}.group-head .name{flex:1}.member-dots{display:inline-flex;align-items:center;gap:4px;min-width:18px;justify-content:flex-end}.member-dot{width:7px;height:7px;border-radius:50%;box-shadow:0 0 0 1px rgba(255,255,255,.72),0 1px 2px rgba(20,30,45,.16)}.member-dot.editing{background:#da494e}.member-dot.pending{background:#e0972d}.member-dot.current{background:#37a570}.member-dot.other{background:#707a8a}.rows{display:block;margin-left:12px;padding:3px 0 6px;border-left:1px solid #d8e2f0}.row{display:grid;grid-template-columns:26px 48px minmax(160px,1fr) minmax(150px,1fr) 130px;gap:7px;align-items:center;padding:6px 12px;border-top:1px solid #f0f2f6;font-size:12px}.row:hover{background:#fafbfc}.num{font-weight:800;color:#475467;font-size:12px}.name{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.status{font-size:11px;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.actions{display:flex;justify-content:flex-end;gap:6px}.empty{padding:42px;text-align:center;color:var(--sub)}.form{padding:15px;display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:10px}.form input{height:36px;border:1px solid #cfd6e1;border-radius:10px;padding:0 11px;font-size:13px;outline:none}.foot{padding:0 15px 15px;font-size:11px;color:#7b8493;line-height:1.6}.toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(20px);opacity:0;background:#1f2937;color:#fff;border-radius:10px;padding:10px 14px;font-size:12px;transition:.2s}.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+</style></head>
+<body><div class="shell">
+<div class="head"><div><div class="title">空间管理</div><div id="meta" class="meta">正在读取…</div></div><button onclick="refreshState()">刷新</button></div>
+<div id="banner" class="banner">正在载入…</div>
+<div class="card"><div class="card-title"><span>空间与分组</span><span id="count" class="count">0 个空间</span></div><div id="list" class="list"><div class="empty">正在读取…</div></div></div>
+<div class="card"><div class="card-title"><span>将所选空间成组</span><span id="selectedText" class="count">未选择</span></div><div class="form"><input id="groupName" maxlength="80" placeholder="例如：1F、客房区、公共空间"><button id="groupBtn" class="primary" onclick="groupSelected()" disabled>成组</button></div><div class="foot">成组只整理清单和卡片层级，不合并、不打散、不复制任何空间模型。抽屉管理模式支持长按空间卡片拖入、拖出或调整组内顺序。</div></div>
+</div><div id="toast" class="toast"></div>
+<script>
+const app={state:{spaces:[],groups:[]},selected:new Set(),busy:false};
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function call(name,...args){if(window.sketchup&&typeof sketchup[name]==='function')sketchup[name](...args)}
+function toast(msg){const e=document.getElementById('toast');e.textContent=msg||'';e.classList.add('show');clearTimeout(toast.t);toast.t=setTimeout(()=>e.classList.remove('show'),2400)}
+function showError(msg){app.busy=false;toast(msg||'操作失败');renderControls()}
+function refreshState(){call('refresh_spaces')}
+function toggleSelect(id,checked){checked?app.selected.add(String(id)):app.selected.delete(String(id));renderControls()}
+function renderControls(){const ids=[...app.selected],name=document.getElementById('groupName').value.trim(),btn=document.getElementById('groupBtn');btn.disabled=app.busy||!app.state.can_manage||!ids.length||!name;btn.textContent=app.busy?'处理中…':'成组';document.getElementById('selectedText').textContent=ids.length?`已选择 ${ids.length} 个空间`:'未选择'}
+function spaceRow(sp){const id=String(sp.id),checked=app.selected.has(id),busy=sp.busy_label||'',status=busy||sp.status||'—';return `<div class="row"><div><input type="checkbox" ${checked?'checked':''} ${sp.can_group?'':'disabled'} onchange="toggleSelect('${esc(id)}',this.checked)"></div><div class="num">${esc(sp.number)}</div><div class="name" title="${esc(sp.name)}">${esc(sp.name)}</div><div class="status" title="${esc(status)}">${esc(status)}</div><div class="actions"><button class="small" ${sp.can_focus?'':'disabled'} onclick="call('focus_space','${esc(id)}')">定位</button><button class="small" ${sp.can_rename?'':'disabled'} onclick="call('rename_space','${esc(id)}')">重命名</button></div></div>`}
+function statusBucket(sp){const code=String(sp&&sp.status_code||'');if(['editing','error','locked'].includes(code))return'editing';if(['pending','waiting','syncing','disconnected'].includes(code))return'pending';if(code==='current')return'current';return'other'}
+function mixRgb(base,rows){
+  const counts={editing:0,pending:0,current:0,other:0};
+  const baseCss=`rgb(${base.join(',')})`;
+  if(!rows.length){
+    const hover=base.map(v=>Math.min(255,v+10));
+    const accent=base.map(v=>Math.min(255,v+34));
+    return{style:`--group-bg:${baseCss};--group-hover:rgb(${hover.join(',')});--group-accent:rgb(${accent.join(',')});--group-bar:transparent`,summary:''}
+  }
+  const total=rows.length;
+  rows.forEach(sp=>counts[statusBucket(sp)]++);
+  const ordered=[
+    ['editing',[218,73,78]],
+    ['pending',[224,151,45]],
+    ['current',[55,165,112]],
+    ['other',[112,122,138]]
+  ];
+  function gradient(alpha){
+    let pos=0,stops=[];
+    ordered.forEach(([k,c])=>{
+      const pct=counts[k]/total*100;
+      if(pct<=0)return;
+      const next=pos+pct;
+      const color=`rgba(${c[0]},${c[1]},${c[2]},${alpha})`;
+      stops.push(`${color} ${pos.toFixed(3)}%`,`${color} ${next.toFixed(3)}%`);
+      pos=next;
+    });
+    return `linear-gradient(90deg,${stops.join(',')}),${baseCss}`;
+  }
+  let barPos=0,barStops=[];
+  ordered.forEach(([k,c])=>{
+    const pct=counts[k]/total*100;
+    if(pct<=0)return;
+    const next=barPos+pct;
+    const color=`rgb(${c[0]},${c[1]},${c[2]})`;
+    barStops.push(`${color} ${barPos.toFixed(3)}%`,`${color} ${next.toFixed(3)}%`);
+    barPos=next;
+  });
+  const priority=counts.editing?ordered[0][1]:(counts.pending?ordered[1][1]:(counts.current?ordered[2][1]:ordered[3][1]));
+  const summary=[];
+  if(counts.editing)summary.push(`修改 ${counts.editing}`);
+  if(counts.pending)summary.push(`待更新 ${counts.pending}`);
+  if(counts.current)summary.push(`最新 ${counts.current}`);
+  if(counts.other)summary.push(`其他 ${counts.other}`);
+  return{
+    style:`--group-bg:${gradient(.34)};--group-hover:${gradient(.43)};--group-accent:rgb(${priority.join(',')});--group-bar:linear-gradient(90deg,${barStops.join(',')})`,
+    summary:summary.join(' · ')
+  }
+}
+function memberStatusIndicator(rows){
+  if(rows.length>8)return `<span class="count">${rows.length} 个空间</span>`;
+  if(!rows.length)return `<span class="count">空组</span>`;
+  const label={editing:'修改中',pending:'待更新',current:'已更新',other:'其他'};
+  return `<span class="member-dots" aria-label="${rows.length} 个空间">${rows.map(sp=>{const b=statusBucket(sp);return `<span class="member-dot ${b}" title="${esc(sp.name||'空间')} · ${label[b]}"></span>`}).join('')}</span>`
+}
+function groupHead(g,rows){const base=g.collapsed?[244,247,251]:[234,241,251],v=mixRgb(base,rows),title=`点击组卡片${g.collapsed?'展开':'收纳'}${v.summary?' · '+v.summary:''}`;return `<div class="group-head ${g.collapsed?'collapsed':'expanded'}" style="${v.style}" role="button" tabindex="0" title="${esc(title)}" onclick="call('toggle_group','${esc(g.id)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();call('toggle_group','${esc(g.id)}')}"><button class="small" onclick="event.stopPropagation();call('toggle_group','${esc(g.id)}')">${g.collapsed?'展开':'折叠'}</button><div class="name">${esc(g.name)}</div>${memberStatusIndicator(rows)}<button class="small" onclick="event.stopPropagation();call('rename_group','${esc(g.id)}')">改名</button><div class="status-mix-bar"></div></div>`}
+function render(){const s=app.state||{},spaces=Array.isArray(s.spaces)?s.spaces:[],groups=Array.isArray(s.groups)?s.groups:[];document.getElementById('meta').textContent=`SU LinkHub v${s.plugin_version||''} · ${s.workspace_name||''}`;document.getElementById('count').textContent=`${spaces.length} 个空间 · ${groups.length} 个组`;const b=document.getElementById('banner');b.className='banner'+(s.error?' error':(!s.can_manage?' warn':''));b.textContent=s.error||s.hint||'可管理当前工作区的空间。';const valid=new Set(spaces.map(x=>String(x.id)));[...app.selected].forEach(id=>{if(!valid.has(id))app.selected.delete(id)});const byGroup={};spaces.forEach(sp=>{const k=String(sp.group_id||'');(byGroup[k]||(byGroup[k]=[])).push(sp)});let html='';groups.forEach(g=>{const rows=byGroup[String(g.id)]||[];html+=`<div class="group">${groupHead(g,rows)}${g.collapsed?'':`<div class="rows">${rows.map(spaceRow).join('')}</div>`}</div>`});const ungrouped=byGroup['']||[];if(ungrouped.length){const v=mixRgb([244,247,251],ungrouped);html+=`<div class="group"><div class="group-head" style="${v.style}"><div class="name">未分组</div>${memberStatusIndicator(ungrouped)}<div class="status-mix-bar"></div></div><div class="rows">${ungrouped.map(spaceRow).join('')}</div></div>`}document.getElementById('list').innerHTML=html||'<div class="empty">当前工作区还没有空间</div>';renderControls()}
+function groupSelected(){const ids=[...app.selected],name=document.getElementById('groupName').value.trim();if(!ids.length||!name)return;app.busy=true;renderControls();call('group_spaces',JSON.stringify({ids,name}))}
+document.getElementById('groupName').addEventListener('input',renderControls);
+window.SpaceManager={receiveState(state){app.state=state||{};app.busy=false;render()},showError};call('ready');
+</script></body></html>

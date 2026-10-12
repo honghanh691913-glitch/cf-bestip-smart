@@ -1,0 +1,10 @@
+SU LinkHub v0.13.6.79 — 六面代理队列静默截图修复
+
+1. 修复 v0.13.6.78 后台六面代理队列执行时，前台视口快速闪过前/后/左/右/上/下六个方向的问题。
+2. 根因：六面截图每次切换临时 Camera 后显式调用 View#invalidate + View#refresh；refresh 会立即强制重绘当前 SketchUp View。
+3. 六面代理改为“静默截图”：临时 Camera 与白/黑背景仅提供给 View#write_image，不再在每张截图前强制刷新主视口。
+4. 明亮截图样式增加 refresh_view 开关；普通缩略图维持旧行为，六面后台任务关闭前台 refresh。
+5. 代理临时事务收尾顺序调整为“先恢复用户原相机，再 abort 临时事务”，降低 SketchUp 原生事务收尾触发重绘时短暂显示最后一个代理相机的概率。
+6. 保留 v0.13.6.78 的提交即返回、空闲队列、编辑下一件家具与代理完成后自动回切逻辑。
+
+说明：SketchUp Ruby API 没有独立的离屏 3D View；本版不使用 Ruby Thread 操作 SketchUp View。代理仍由主线程在空闲时生成，但不再主动把六个临时相机 refresh 到前台。

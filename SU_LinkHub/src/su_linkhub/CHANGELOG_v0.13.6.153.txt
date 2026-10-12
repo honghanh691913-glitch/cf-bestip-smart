@@ -1,0 +1,10 @@
+SU LinkHub v0.13.6.153
+
+后台发布速度与 SMB/NAS 卡顿优化：
+- 空间发布候选优先使用 ComponentDefinition#save_copy，避免 save_as 改变 Definition 关联路径并触发额外原生状态重建；仅在 save_copy 真正失败时回退 save_as。
+- UNC/SMB 协同目录启用网络发布快速路径：本机候选完整 SHA 校验后，上传 stage 只核对实际写入完成、远端长度与 stat，不再把刚上传的 90~100MB SKP 从 NAS 再整包 SHA 读回。
+- 网络最终替换新增目标级短生命周期 EXCL 锁；隐藏 stage 可正常上传，最终 target/rollback rename 窗口串行化并再次核对目标快速签名，避免并发覆盖。
+- UNC 最终交换改为同目录 rename，不再在 SMB 上优先尝试 hard-link + 删除路径，减少服务器/杀毒过滤器造成的数秒到十几秒元数据等待。
+- 网络快速路径不再对刚替换的正式 SKP 立即执行 utime + 多次 stat/readback；直接复用最终交换锁内取得的稳定 mtime/size 与本机完整内容指纹。
+- 非 UNC、本地盘以及强制覆盖流程继续保留原有整文件 SHA/回滚强校验路径，不降低这些高风险路径的验证等级。
+- 新增 remote_stage_network_trusted / network_final_swap_begin / network_final_swap_returned 发布诊断阶段，后续可直接区分“真正上传慢”还是“共享盘重复读回慢”。

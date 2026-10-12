@@ -1,0 +1,40 @@
+SU LinkHub v0.13.6.92
+=======================
+
+本版是 v0.13.6.91 的紧急回归修复。用户实测：升级后不仅历史空间，连新建空空间也会被“当前空间的编辑 Definition 仍与其它实例共享”拦截，导致空间修改入口整体不可用。
+
+1. 撤销 v0.13.6.91 的过度硬拦截
+   - 不再把“Definition 有多个实例 / 普通 shared”直接等同于 SketchUp 锁冲突。
+   - 不再因为编辑脊柱上仍有普通共享 Definition 就阻止整个空间进入。
+   - isolate 诊断自身异常也不再返回 remaining=-1 触发硬失败。
+
+2. 将共享与锁冲突拆成两种状态
+   - shared：Definition 具有多个真实 instance，仅用于尽力 make_unique，防止跨空间串改。
+   - lock_conflict：Definition 某个 occurrence 直接 locked，或嵌在存在 locked occurrence 的父 Definition 中；只有它与 SketchUp“部分实例已锁定”三选一相关。
+
+3. 增加嵌套父级锁传播检测
+   - 从子 Definition 的实例向父 ComponentDefinition 递归追踪 locked occurrence。
+   - 覆盖“子组件自己没锁，但另一个父组件副本被锁”的真实冲突。
+
+4. 空间进入改为 fail-open + 根边界保护
+   - 空间根仍会先解锁并尽力建立独立 Definition。
+   - 只有空间根自身在隔离后仍存在有效锁传播，才认为进入根上下文本身不安全。
+   - 内部核心层若还有诊断项，不阻断进入；由双击桥在真正进入该核心层前再次隔离。
+
+5. 强制唯一化更稳健
+   - 先执行原生 make_unique。
+   - 极少数 SketchUp 场景 make_unique 无动作时，临时创建同 Definition scratch 实例强制生成新 Definition，随后立即删除 scratch。
+   - scratch 优先放在当前父 Entities，不长期留下几何或实例。
+   - 不执行“全部解锁”，其它空间/实例锁状态不变。
+
+6. 核心层双击兜底修正
+   - 普通 shared 不再成为禁止进入的条件。
+   - 只有仍存在有效 locked occurrence 传播时才阻止原生三选一；否则直接进入。
+
+7. 继续保留此前功能
+   - PACKAGE/PAYLOAD 历史空壳自动清理。
+   - 家具修改后的黄色半透明待提交高亮。
+   - 多件代理任务队列逐个更新、逐个取消高亮。
+   - 退出空间 / 点击代理 / 发布触发待处理代理队列。
+
+安装建议：由于 0.13.6.91 修改过 ToolsObserver/编辑状态，安装 0.13.6.92 后请完整关闭所有 SketchUp 窗口再启动一次。此前被 0.13.6.91 安全暂存的空间可直接点击“继续/修改”恢复，不需要手动“全部解锁”。

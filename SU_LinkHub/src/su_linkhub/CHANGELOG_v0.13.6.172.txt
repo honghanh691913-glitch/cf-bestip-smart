@@ -1,0 +1,21 @@
+SU LinkHub v0.13.6.172
+========================
+
+家具组/组件代真切换作用域重构
+- 重构顶部“代理 / 真模型”的目标解析链路，不再只有“直接家具 / 整个空间”两档。
+- 新增统一 Selection Scope Resolver：直接家具、普通 Group/Component 容器、空容器、空间回退分别建模。
+- 选中一个由多个软装库模型组成的 Group/普通组件时，只递归收集该容器内部的 LinkHub 家具；不会再误回退成整个空间切换。
+- Overlay 点击导致 SketchUp 暂时清空 Selection 时，缓存完整容器作用域，而不是只缓存直接家具，因此点击代/真按钮后作用域仍保持正确。
+- 容器/嵌套容器 Definition 被其它 occurrence 共用时，在同一个 Undo 事务内只沿含家具的路径 make_unique，避免选中一个组却影响组外同定义实例。
+- 已经全部处于目标状态时直接返回，不为了重复点击制造无意义的 make_unique / Definition。
+- 空 Group/Component 被明确选中时，代/真按钮不再静默回退到全空间；UI 会提示该容器内没有 LinkHub 家具。
+- 工具条显示“选中组/组件内 N 个家具”，并明确提示左右按钮只作用于当前选择范围。
+- 选择作用域结果按 selection + Definition + 家具注册 revision 缓存，避免高频 Overlay 刷新反复递归扫描同一个组。
+
+验证
+- 直接家具选择、Group 内多家具、空 Group、Overlay selection 清空后的 recent scope 均通过针对性测试。
+- 共享 Group Definition 场景验证：切换选中 Group 后，仅该 Group 内家具变更，未选中的同定义 Group 保持原状态。
+- 嵌套共享容器场景验证：只隔离选中作用域路径，外部 occurrence 不受影响。
+
+继承
+- 完整继承 v0.13.6.171 的家具双击进入锁传播修复，以及 v0.13.6.170 的 Observer/事务、六面代理、NAS/SMB、Bounds、批量索引和模块化优化。

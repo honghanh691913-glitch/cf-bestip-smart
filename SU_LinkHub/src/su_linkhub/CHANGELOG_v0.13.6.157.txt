@@ -1,0 +1,7 @@
+SU LinkHub v0.13.6.157
+
+- 联动空间第一份副本完成基点/目标点放置后立即结束 LinkHub placement 状态，直接转成“待登记副本”；后续移动、旋转、缩放、镜像与 Move+Ctrl 全部交回 SketchUp 原生工具，避免视图/选择被持续刷新拖慢。
+- 修复原生复制多个联动副本后“选第二个却登记第一个”的问题：顶部对勾不再依赖全局 current copy record，而只登记当前实际选中的 pending 实例。
+- 原生 Move+Ctrl 复制后的身份整理从全模型 model.entities 扫描改为同 Definition 的少量实例检查，减少大型项目中的主线程卡顿。
+- 待登记副本原生复制后自动为额外实例分配独立临时 ID；逐个选中均会稳定出现顶部绿色对勾，可依次命名并关联同一来源空间。
+- 连续 Move/Rotate/Scale transaction 使用合并定时器与轻量 toolbar refresh，避免复制阶段反复完整刷新界面。

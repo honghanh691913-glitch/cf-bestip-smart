@@ -1,0 +1,45 @@
+SU LinkHub v0.13.6.27
+
+发布三阶段事务重构 / 原生提交崩溃专项修复
+
+1. 空间发布拆为三阶段：
+   - Phase A：仅在 SketchUp 临时 operation 中构建代理发布包 / wrapper / make_unique，并只保存到本机 Temp。
+   - 本机候选保存完成后立即 abort_operation，临时发布定义图不再进入主模型 Undo。
+   - Phase B：版本复核、SMB/NAS 复制、rollback、原子替换、hash、快照全部在没有开放 SketchUp operation 的情况下执行。
+   - Phase C：远端文件与 manifest 成功后，仅用一个小型 operation 写入本地版本属性、锁定状态和 LinkHub state。
+
+2. 协作锁生命周期调整：
+   - 最终本地 commit 成功前，物理协作锁文件绝不释放。
+   - commit 成功后才删除锁文件。
+   - 若 final commit 原生崩溃，锁会保留下来供下次启动恢复，避免“远端已发布但锁已释放、本地未提交”的半状态。
+
+3. 候选序列化与网络发布解耦：
+   - 新增 serialize_publish_definition_candidate!。
+   - 新增 atomic_publish_prepared_candidate!。
+   - 原 atomic_publish_definition 保持兼容入口，建筑/景观/旧流程行为不变。
+
+4. 新增发布诊断阶段：
+   candidate_operation_start_begin
+   candidate_operation_started
+   space_candidate_prepared
+   candidate_operation_abort_begin
+   candidate_operation_abort_returned
+   remote_publish_begin
+   remote_publish_returned
+   representation_finalize_operation_*
+   finalize_operation_start_begin
+   finalize_operation_started
+   finalize_operation_commit_begin
+   finalize_operation_commit_returned
+   space_lock_release_begin
+   space_lock_release_returned
+
+5. 真/代理缓存生命周期沿用 v0.13.6.26：
+   - 真模型只加载一次并在会话内复用。
+   - 真→代理不触发同步高模 Definition 删除。
+   - 发布成功后仅标记可回收，实际回收仍由 idle/LRU scheduler 分批执行。
+   - 六视图代理仍为唯一家具基础代理，不恢复白盒 fallback。
+
+6. 失败恢复：
+   - Phase B 已远端发布而本地收尾失败时，不再伪装成普通“发布失败”。
+   - 保留占用并显示“远端发布已完成 · 本地收尾失败 · 占用已保留”。

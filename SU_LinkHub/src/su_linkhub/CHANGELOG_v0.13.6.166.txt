@@ -1,0 +1,14 @@
+SU LinkHub v0.13.6.166
+========================
+
+稳定性
+- 增加内部同步深度屏障，ModelObserver#onTransactionCommit 不再响应 LinkHub 自己的后台纠错事务，阻断 Observer -> Timer -> operation -> Observer 反馈链。
+- 增加 safe_model_operation，后台模型事务异常时统一 abort，避免未闭合 operation 污染 Undo 栈。
+- 原生锁定保护与联动空间副本整理进入内部同步域；空间内“禁止原生锁定”的纠错事务保留 transparent 合并，避免额外 Undo 层。
+
+性能
+- 六面代理黑白底抠图改为无临时数组的像素热循环；不采用 unpack('C*')，减少 Array/GC 压力。
+- gain=1 的常见截图走整数快路径，并用无分配三数中位数替代每像素 sort。
+
+说明
+- 未改动六面代理 192px 清晰度、12 张白/黑底截图算法、代理文件强 SHA 校验和视觉 bounds 语义，优先保证兼容与数据安全。

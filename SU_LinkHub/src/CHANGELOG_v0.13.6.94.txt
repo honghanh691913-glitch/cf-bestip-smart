@@ -1,0 +1,27 @@
+SU LinkHub v0.13.6.94 · ESC 退出空间被双击桥吞键专项修复
+
+用户实测：在空间/家具编辑过程中，ESC 经常无法继续退出到最外模型层级；点击发布后却能够退出。该现象不是发布前置要求，而是 v0.13.6.90~0.13.6.93 为接管锁冲突和家具代理双击加入的 WorkspaceDoubleClickBridgeTool 抢占了 ESC。
+
+根因：
+- WorkspaceDoubleClickBridgeTool 通过 SketchUp model.tools.push_tool 临时压在 SelectionTool 上。
+- 旧 onCancel 仅 pop_tool，自身把用户 ESC 消耗掉，没有把“退出当前组件编辑层级”交还给 SketchUp/LinkHub。
+- 某些选择变化会再次武装桥接 Tool，于是用户连续按 ESC 仍可能只是在反复取消桥，看起来像空间无法退出。
+- 发布流程直接设置 model.active_path=nil，因此发布后反而能够退到模型根，造成“必须发布才能退出”的错觉。
+
+本版修复：
+1. 双击桥收到用户 ESC(reason=0) 时，先彻底清理 bridge/candidate/token，并 pop 自己。
+2. 不在 Tool#onCancel 回调内直接修改 active_path；改在下一主线程空闲帧安全退一级。
+3. 当前路径只有空间根一层时，ESC 直接 active_path=nil 回模型根，并继续走既有 finish_space_edit_context_exit! 安全暂存逻辑。
+4. 当前路径有多层时只退一级，保持 SketchUp 原有逐层退出手感。
+5. 如果退出的是单件家具真模型层，既有 handle_soft_individual_edit_active_path_change 会照常自动保存并登记 pending；不会因为修 ESC 绕过家具写库。
+6. 回到模型根后，pending 六面代理仍按 v0.13.6.93 的单 driver 队列异步启动；ESC 本身绝不等待代理，也不要求发布。
+7. 若 bridge 退出后的极短窗口内编辑树已经被其它动作切换，新逻辑会放弃本次 active_path 修改，避免误退其它上下文。
+
+保留功能：
+- v0.13.6.93 六面代理单 driver、去重、watchdog 与孤儿任务回收。
+- PACKAGE/PAYLOAD 历史空壳清理。
+- 共享 Definition/锁冲突处理与当前实例隔离。
+- 修改家具后的黄色半透明 pending 高亮，成功逐个消失。
+- 发布/代理按钮/完全退出空间均可触发待提交代理刷新，但不再影响 ESC 是否能退出。
+
+安装建议：本版修改了已注册的双击桥 Tool 行为。安装后请完整关闭所有 SketchUp 窗口并重新启动一次，避免旧运行代中的 Tool 实例仍留在 tool stack。

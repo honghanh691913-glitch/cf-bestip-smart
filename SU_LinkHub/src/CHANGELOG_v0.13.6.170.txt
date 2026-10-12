@@ -1,0 +1,30 @@
+SU LinkHub v0.13.6.170
+========================
+
+稳定性收尾
+- 全量复查 runtime 与拆分模块中的 SketchUp operation：修复遗留的“迁移软装＋硬装空间模型”裸事务，统一进入 safe_model_operation；静态审计未再发现缺少 abort/safe/cancel 收尾的 start_operation 路径。
+- 修复 SelectionObserver 延迟刷新中的隐藏反馈链：联动空间 native copy / transform selection / pending selection reconcile 统一进入 internal sync guard，避免 Timer 内透明事务再次反馈到 ModelObserver。
+- 家具编辑退出确认的原始 UI.start_timer 改为 runtime_start_timer，纳入统一 timer 生命周期与热重载清理。
+- 保留需要与用户原生动作合并的透明纠错事务；不机械地把所有 transparent 改成独立 Undo 步骤。
+
+六面代理截图
+- 新增 SketchUp 原生 transparent:true 自校验快路径。首次用一面 transparent + white + black 做像素合成校验；通过后当前会话后续每款只需 6 次 write_image，不通过则自动永久回退稳定的 12 次白/黑双底算法。
+- 自检通过时首件共 8 次截图；自检失败时首件共 13 次（仅一次探测），之后仍为原 12 次，不以兼容性换速度。
+- 批量代理分辨率使用 128px，单件即时生成继续 192px；批量像素量相对 192px 减少约 55.6%。
+- 保留 v0.13.6.169 的远端投影隔离、一次场景准备、Alpha 热循环优化与异常模型安全回退。
+
+网络 / 文件 I/O
+- Windows 映射盘（如 H:\ / Z:\）若 DriveType=Remote，自动按 SMB/NAS 网络快速路径处理，不再只有 UNC 才能受益。
+- LinkHub 自己生成且位于 TEMP_ROOT_DIR 的随机候选文件增加生命周期内 SHA-256 复用；共享/正式文件绝不使用该缓存，避免弱化并发与完整性保护。
+- 继续保留本机完整 SHA、远端 size + 首/中/尾内容抽样、final-swap 文件锁、并发基线与 rollback。
+
+架构拆分
+- runtime.rb 从约 7 万行的 God File 进一步拆分为 constants.rb、tools.rb、ui_drawer.rb、observer_coordinator.rb、proxy_visual.rb、proxy_queue.rb、publish.rb、space_manager.rb。
+- 所有拆分模块仍使用 Kernel.load，保留现有开发期热重载流程。
+- 新增轻量 Runtime EventBus（on/off/emit/clear）；六面代理批任务完成已改为发布事件，为后续跨模块解耦提供稳定接口。
+
+继承优化
+- 继承 v0.13.6.166 Observer 递归屏障、安全事务与像素热循环优化。
+- 继承 v0.13.6.167 六方向一次场景、批量索引一次写、索引三方合并与 Bounds 原生快路径。
+- 继承 v0.13.6.168 NAS 快速替换、hard-link 与索引自动重试。
+- 继承 v0.13.6.169 网络抽样内容/mtime 分离和 O(N root entities) 截图隔离优化。

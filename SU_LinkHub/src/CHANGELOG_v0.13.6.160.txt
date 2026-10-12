@@ -1,0 +1,9 @@
+SU LinkHub v0.13.6.160
+
+联动空间第一次复制改为 SketchUp 原生 MoveTool：
+- 不再由 Ruby 自定义 InputPoint/虚拟预览实现基点 -> 目标点。
+- 点击 LinkHub 复制后先创建一个共享同一 Definition 的待命名联动实例并选中。
+- 随即激活 SketchUp 原生 MoveTool；端点/中点/交点/面/边推断、轴向锁定、Shift 推断锁、方向键约束和中键临时 Orbit 全部交给 SketchUp 原生工具。
+- 原生 MoveTool 中可继续 Ctrl 复制，后续副本仍由 159 的 Definition 增量观察自动登记为独立待命名联动空间。
+- 激活原生 Move 前抑制 LinkHub 双击桥短暂重入，避免临时 Ruby Tool 抢回鼠标导致移动手感异常。
+- 若当前 SketchUp 环境无法由 API 激活 MoveTool，则保留待命名副本并提示用户按 M，功能不丢失。

@@ -1,0 +1,10 @@
+SU LinkHub v0.13.6.89
+
+1. 针对 v0.13.6.88 仍无法清理的历史空间“有定义空壳”追加专用识别：明确识别 LH_SPACE_PACKAGE_* / H_SPACE_PACKAGE_* / SPACE_PACKAGE_* 以及受信任链中的 LH_SPACE_PAYLOAD_* / SPACE_PAYLOAD_* / PAYLOAD_*。
+2. 这类 PACKAGE/PAYLOAD 是 LinkHub 发布/载入过程产生的运输结构，不再因为 Definition 名称或 LinkHub 包元数据而被误判为用户业务组件；进入空间时可从“空间根 -> PACKAGE -> PACKAGE -> PAYLOAD -> 核心内容”直接压平到“空间根 -> 核心内容”。
+3. 裸 PAYLOAD 名称不会单独作为删除依据：只有已经处于受信任的 LinkHub PACKAGE 链中，或 Definition 同时具有完整 package graph 身份元数据时才允许折叠，降低误处理用户自建组件的风险。
+4. LinkHub 运输壳即使带有 package 元数据仍可拆，但实例自定义名称、非默认 Tag、隐藏、锁定、粘附、动态切孔/始终朝向相机等真正业务语义仍会阻止自动折叠。
+5. 折叠 PAYLOAD 前会把 LinkHub 内容根标记、兼容版本标记、参考清理计数以及可用的 Definition 描述回写到保留的最外层空间根，避免只为减少层级而丢失必要的 LinkHub 根信息。
+6. 每拆一层仍使用 SketchUp 原生 explode 保留变换；整个修复事务继续执行最外层 Bounds 前后复核，位置或尺寸异常时撤销本次修复，不影响正常修改/退出/发布流程。
+7. 空壳修复仍在“点击修改进入空间前、退出空间到全模审阅、发布前”自动运行，因此旧项目安装本版后无需手工炸开；第一次重新进入对应空间即可完成历史壳修复。
+8. 保留 v0.13.6.87/88 的黄色待提交代理高亮、队列逐个消失、家具安全空壳清理和发布/退出/代理按钮触发批处理等功能。

@@ -1,0 +1,13 @@
+SU LinkHub v0.13.6.171
+========================
+
+家具双击进入修复
+- 修复双击进入家具组件时可能出现 “ArgumentError: Cannot open instance path with locked sibling instances”。
+- 根因是 SketchUp 的 active_path= 会把父 Definition 的 locked occurrence 向子 Definition 传播；旧版只检查/解除 instance.locked? 的直接兄弟锁，漏掉父级锁传播。
+- 新版沿“目标 Definition -> instance -> 父 Definition -> 父 occurrence”递归定位真正造成锁传播的直接 locked occurrence，仅在家具编辑期间临时解除，退出后按原状态恢复。
+- “临时解锁 -> active_path=”统一放入 internal sync guard，避免 Observer/后台锁维护在真正进入前抢先恢复临时锁。
+- 增加进入前残余锁传播预检；仍有冲突时不调用 active_path=，直接安全失败。
+- 增加 active_path= 异常回滚：若进入失败，立即恢复进入前家具状态、临时锁和会话，不再留下已切真/make_unique 的半完成状态。
+
+继承
+- 完整继承 v0.13.6.170 的 Observer/事务、六面代理、NAS/SMB、Bounds、批量索引和模块化优化。

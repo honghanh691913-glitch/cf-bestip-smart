@@ -1,0 +1,14 @@
+SU LinkHub v0.13.6.64 — 异步发布 I/O 去重加速版
+
+本版针对 6.63 能看到进度但后台发布仍然非常慢的问题，重点减少同一个空间 SKP 在 NAS 上反复整文件 SHA-256 和重复复制。
+
+1. 后台 worker 对本机候选只计算一次完整 SHA；atomic publish 复用该结果，只用 mtime/size 快速确认候选未变化。
+2. TEMP 与 LOCALAPPDATA 同卷时，本机发布候选直接 rename 成恢复快照并继续作为发布候选，不再本机 copy + 再 SHA 一遍。
+3. 共享旧版本：传输前保留一次强基线；传输过程中只用 fast + 首尾抽样判断有没有变化；真正替换前对 rollback 做一次完整 SHA，仍保留最终强校验。
+4. 若最近安全快照 sidecar 可验证，则直接复用上次完整 SHA，发布前甚至不需要再次全盘读取旧共享 SKP；最终 rollback 仍重新完整 SHA。
+5. remote stage 已完整 SHA 后，正式提升改用 preverified create-only，不再重复读取 stage；最终 target 只做一次完整 SHA，并把结果复用于后续检查。
+6. 最近安全快照 / 个人快照在已有可信 candidate SHA 时，不再反复读取 source 和 destination；仅检查 source 前后快速签名，并对新复制出的 temp 做一次完整 SHA。
+7. 保留 6.63 的实时发布进度、心跳诊断、异步队列竞态保护与崩溃恢复。
+
+注意：仍不能把 SketchUp Definition.save_as 放进 Ruby 后台线程。前台候选封装仍是唯一必须占用 SU 主线程的阶段。
+8. 空间异步发布在“正式共享文件 + 最近安全快照”完成后就立即返回成功并释放协作锁；个人最近发布快照延后在纯 I/O worker 中补存，不再阻塞空间重新编辑。

@@ -1,0 +1,43 @@
+SU LinkHub v0.13.6.93 · 六面代理队列卡死/重复进行中专项修复
+
+本版针对用户实测“代理任务长期停在 2% / 8%，任务队列从 1 个进行中变成 2 个进行中”的问题，重新收紧代理任务状态机；不改动 v0.13.6.92 已恢复的空间编辑入口、PACKAGE/PAYLOAD 空壳修复和共享 Definition 锁处理。
+
+1. 六面代理改为单 driver 串行推进
+- scan / wait / capture slice / next 不再各自随意挂多个 process timer。
+- 同一时刻只保留一个主线程 driver；所有 SketchUp API 仍只在主线程调用。
+- 增加重入保护，避免退出空间、发布、代理按钮几乎同时触发时连续消费同一个 job。
+
+2. 退出空间时可“接管并晋升”已经存在的后台代理 job
+- 旧版 start_soft_pending_proxy_exit_batch! 看到 @soft_visual_proxy_upgrade_job 已存在会直接返回，导致新 pending 停在 2%，旧 job 停在 8%，二者互相等待。
+- 新版会把待提交 seed 合并进现有 job，并在已经回到模型根层级时把它晋升为 foreground_exit_batch，继续单线程前台串行生成。
+
+3. watchdog 自动恢复丢失的 driver timer
+- job 存在但没有 driver 且主线程当前不在执行代理步骤时，watchdog 会重新挂起 driver。
+- watchdog 不会并发截图；若 SketchUp 正在 write_image/save_as，Ruby 主线程本身不会同时执行 watchdog。
+
+4. 自动回收“孤儿代理任务卡片”
+- 已经没有 pending 实例、scan seed、queue candidate 或 active candidate 引用的 visual_proxy queued/running 卡片会自动取消并标记“旧代理任务已回收”。
+- 避免历史 2% 卡片永久占用任务中心。
+
+5. task_id 失效自动重建
+- 热重载/旧 job 收尾后，pending record 如果还记着一个已完成、失败或不存在的 task_id，不再继续向死 ID 写进度；会建立新任务并回写当前同 model_id pending 记录。
+
+6. 修复 pending 候选解析失败导致的重复循环
+- 对普通维护扫描，candidate=nil 仍可代表无需升级。
+- 对明确带 proxy_rebuild_pending 的已修改家具，candidate=nil 现在视为失败并保留真模型，不再错误显示“代理已是最新”后又在 job 收尾重新排队，形成 2%/8% 循环。
+
+7. 任务中心标题拆分执行/等待
+- 不再把 queued 和 running 全部显示成“进行中”。
+- 面板标题改为“X执行 · Y等待”，更容易判断是真正在生成还是只在等待空间退出/安全窗口。
+
+8. 运行时恢复
+- 新运行代不会继承半截 proxy driver/job；pending 真相仍以模型实例 proxy_rebuild_pending 为准。
+- 启动后若当前已经在模型根层级，会自动恢复这些 pending 并重新启动干净队列。
+
+保留功能：
+- v0.13.6.92 空间编辑入口回归修复与有效锁传播判定。
+- PACKAGE/PAYLOAD 历史空壳清理与安全 Bounds 复核。
+- 修改后黄色半透明 pending 高亮；多件同时显示；成功逐个消失、失败保留提示。
+- 完全退出空间 / 点击代理 / 发布触发待提交代理刷新。
+
+安装建议：由于当前会话可能已经存在 v0.13.6.92 的卡死 job/timer，安装 v0.13.6.93 后请完整关闭所有 SketchUp 窗口再启动一次。重启后模型实例上的 pending 标记会自动恢复，不需要重新修改家具。
