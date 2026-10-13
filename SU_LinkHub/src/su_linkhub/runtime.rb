@@ -3443,8 +3443,13 @@ module GavinTools
     # 把同一家具定义的其它实例重新锁上（只处理受管软装、只上锁不解锁）。
     def relock_soft_furniture_siblings!(entity, model = Sketchup.active_model)
       return 0 unless entity && entity.valid? && entity.respond_to?(:definition)
+      model_id = (soft_instance_metadata(entity)['model_id'].to_s rescue '')
+      return 0 if model_id.empty?
+      session_entities = Array((@soft_individual_edit_sessions || {}).values).map { |record| record.is_a?(Hash) ? record[:entity] : nil }.compact
       siblings = entity.definition.instances.select do |instance|
-        instance.valid? && !instance.equal?(entity) && instance.respond_to?(:locked?) && !instance.locked?
+        next false unless instance.valid? && !instance.equal?(entity) && instance.respond_to?(:locked?) && !instance.locked?
+        next false if session_entities.any? { |session_entity| session_entity.equal?(instance) }
+        ((soft_instance_metadata(instance)['model_id'].to_s rescue '') == model_id)
       end
       return 0 if siblings.empty?
       model.start_operation('重新锁定同款家具', true, false, true)
@@ -3484,7 +3489,8 @@ module GavinTools
         label = entity.name.to_s if label.empty? && entity.respond_to?(:name)
         label = '家具' if label.empty?
         log("检测到原生误入受管家具，已退回父层并重新接管：#{label} / #{hit[:representation]} / #{hit[:model_id]} / 重新锁定同款 #{relocked} 个")
-        candidate = { entity: entity, id: hit[:model_id].to_s, space_id: hit[:space_id].to_s }
+        # restore_locked：原生“全部解锁”也解开了这一件；安全编辑结束（含回滚）后恢复锁定。
+        candidate = { entity: entity, id: hit[:model_id].to_s, space_id: hit[:space_id].to_s, restore_locked: true }
         runtime_start_timer(0.02, false, label: 'soft:native_entry_rearm', key: "soft:native_entry_rearm:#{key}", model: model, active_model_only: true) do
           @workspace_escape_suppress_until&.delete(key) if !model.active_path.nil?
           @workspace_double_click_rearm_suppress_until&.delete(key)
@@ -3494,6 +3500,15 @@ module GavinTools
             show_workspace_floating_notice("已自动改为只编辑这一件 · #{label} · 同款其它家具不受影响", 'info', duration: 3.2, model: model)
           rescue StandardError => edit_error
             log("原生误入后自动进入安全编辑失败：#{edit_error.message}")
+            begin
+              if entity.valid? && !entity.locked?
+                model.start_operation('重新锁定家具', true, false, true)
+                entity.locked = true
+                model.commit_operation
+              end
+            rescue StandardError
+              model.abort_operation rescue nil
+            end
             show_workspace_floating_notice("已阻止直接编辑共享家具 · #{label} · 请再次双击进入（#{edit_error.message}）", 'info', duration: 4.0, model: model)
             arm_workspace_double_click_candidate(model)
           end
@@ -5699,11 +5714,11 @@ module GavinTools
           model_id: model_id, model_name: (library_item['name'].to_s.empty? ? candidate[:label].to_s : library_item['name'].to_s),
           source_path: source_path, source_snapshot_signature: source_snapshot_signature,
           entry_representation: entry_representation, entry_definition: entry_definition_before_edit,
-          entry_transformation: entry_transformation_before_edit, entry_locked: entry_locked_before_edit,
+          entry_transformation: entry_transformation_before_edit, entry_locked: (candidate[:restore_locked] == true || entry_locked_before_edit),
           entry_name: entry_name_before_edit, entry_layer: entry_layer_before_edit,
           # 兼容既有取消/回滚字段；它们现在表示“进入编辑前状态”，不再强制一定是代理。
           proxy_definition: entry_definition_before_edit, proxy_transformation: entry_transformation_before_edit,
-          proxy_locked: entry_locked_before_edit, proxy_name: entry_name_before_edit, proxy_layer: entry_layer_before_edit,
+          proxy_locked: (candidate[:restore_locked] == true || entry_locked_before_edit), proxy_name: entry_name_before_edit, proxy_layer: entry_layer_before_edit,
           soft_attributes: soft_attributes_before_edit,
           source_full_definition: source_full_definition,
           edit_definitions: Array(edit_isolation[:definitions]),

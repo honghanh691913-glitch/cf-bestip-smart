@@ -111,3 +111,8 @@
   - runtime.rb：`soft_clear_definition_bounds_cache!(definition)` 同时 native invalidate；`soft_model_transaction_committed` 调用 active path invalidate；`replace_instance_definition_preserving_box!` 先刷新两边 bounds，同 model_id 且尺寸差 ≤0.3% 时保留原矩阵；`bake_space_outer_transformation!`、世界包装子实例替换（2 处）、三处 `reload`、拆壳 explode（2 处）、只改轴 wrapper 后 invalidate；`preserve_link_world_position!` 非刚体坐标轴不补偿；启动时在代理队列恢复前安排 bounds 修复；新增 `relock_soft_furniture_siblings!`，`guard_native_soft_furniture_entry!` 退回父层后重新锁定同款其它实例，并直接调用 `edit_soft_proxy_instance_via_double_click!` 进入单件安全编辑（失败才退回原来的“再次双击”）。
   - observer_coordinator.rb：onOpenModel/onActivateModel 安排 bounds 修复。proxy_visual.rb：六面图像面建好后 invalidate。
 - 未做（需用户决定）：单件编辑退出后是否仍自动写回全局模型库（会影响其他项目的同款）；发布前比对家具内容与模型库签名的完整性检查；已变形家具不会自动还原。
+- 审查修正（第一轮风险 7/10）：
+  - 原生“全部解锁”接管时，被双击的那件也会在安全编辑结束/回滚后恢复锁定（candidate[:restore_locked]）；自动进入失败时也立即重新锁上。
+  - 重新锁定只处理同 model_id 的受管家具，排除正在单件编辑的实例。
+  - 事务提交时就记录当前编辑定义并合并到待处理集合（退出组件时 active_path 已变，避免漏掉最后一次编辑）。
+  - bounds 失效改为先求“定义+上层”去重闭包再统一失效；大批量时整体清一次配对缓存；启动修复改为单次遍历，赶在 0.9s 代理队列恢复之前完成。
