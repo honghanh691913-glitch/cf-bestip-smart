@@ -97,3 +97,17 @@
 - 用户反馈：没有绝对的正面/反面，用户选的那一面就是正面；只需要反转图标，不要文字。
 - 改动：`soft_schedule.html` 删除 `.thumb-view-tag` 标签和 `viewName`；按钮提示改为中性说明；`soft_designer.html` 提示同步修改；`thumbnail_views.rb` 删除 `SOFT_THUMBNAIL_VIEW_LABELS`，状态提示改为“已反转/已更新”。内部视图键 a/b/front 不变（数据兼容）。
 - 验证：`ruby -c`、UI JS 检查通过。
+
+## 步骤 7 — 家具变大/压扁、选择框偏大、改一件全部跟着变（2026-10-13）
+
+- 版本：0.13.7.7　状态：完成（静态检查通过；需在 SketchUp 实测）
+- 用户现象：床发布后第二天变大；改轴后模型被压扁；选择框比模型大，进入组件后恢复，没进入的同款仍偏大；床里多出/少了体块；双击锁定的床时出现原生“全部解锁/设为唯一”，选全部解锁后编辑，同款和联动副本空间全部跟着变。
+- 静态分析结论（两个 debug 子任务）：
+  1. `ComponentDefinition#bounds` 是缓存，API 改动后不会自动重算；全代码只有一处 `invalidate_bounds`。插件自己的 bounds 缓存令牌（GUID+实体数+原生 bounds 签名）在原生值过期时也不会失效。`replace_instance_definition_preserving_box!` / `soft_transformation_from_box_snapshot` 按过期尺寸计算补偿缩放并写入实例矩阵 → 家具永久变大/压扁。
+  2. 原生双击抢在 LinkHub 双击桥之前；用户选“全部解锁”后直接编辑共享定义，没有单件编辑会话；联动副本共享同一个空间定义，发布时整体打包并同步 → 全部跟着变。
+  3. 多出体块：未发现插件把代理面/白盒并入真模型的路径；最可能是共享定义被直接编辑，或其他项目通过单件编辑写回了模型库源 SKP（`update_existing_soft_library_from_entity!`）。
+- 改动：
+  - 新文件 `src/su_linkhub/bounds_integrity.rb`：`soft_invalidate_definition_bounds!`（定义+全部上层定义 invalidate_bounds、清插件缓存）、`soft_invalidate_entity_bounds!`、`soft_invalidate_active_path_bounds!`（事务提交后延迟 0.05s 合并执行）、`schedule_soft_bounds_repair!`（启动/打开/切换模型后分批 200 个修复所有带 model_id 的定义）、`soft_same_furniture_definitions?`、`soft_definition_extents_close?`、`soft_rigid_frame?`。
+  - runtime.rb：`soft_clear_definition_bounds_cache!(definition)` 同时 native invalidate；`soft_model_transaction_committed` 调用 active path invalidate；`replace_instance_definition_preserving_box!` 先刷新两边 bounds，同 model_id 且尺寸差 ≤0.3% 时保留原矩阵；`bake_space_outer_transformation!`、世界包装子实例替换（2 处）、三处 `reload`、拆壳 explode（2 处）、只改轴 wrapper 后 invalidate；`preserve_link_world_position!` 非刚体坐标轴不补偿；启动时在代理队列恢复前安排 bounds 修复；新增 `relock_soft_furniture_siblings!`，`guard_native_soft_furniture_entry!` 退回父层后重新锁定同款其它实例，并直接调用 `edit_soft_proxy_instance_via_double_click!` 进入单件安全编辑（失败才退回原来的“再次双击”）。
+  - observer_coordinator.rb：onOpenModel/onActivateModel 安排 bounds 修复。proxy_visual.rb：六面图像面建好后 invalidate。
+- 未做（需用户决定）：单件编辑退出后是否仍自动写回全局模型库（会影响其他项目的同款）；发布前比对家具内容与模型库签名的完整性检查；已变形家具不会自动还原。

@@ -672,6 +672,7 @@ module GavinTools
 
       def onOpenModel(model)
         GavinTools::SULinkHubMultiSpace::Runtime.attach_coordinate_observer(model)
+        GavinTools::SULinkHubMultiSpace::Runtime.schedule_soft_bounds_repair!(model)
         GavinTools::SULinkHubMultiSpace::Runtime.handle_active_model_for_status_card(model)
         GavinTools::SULinkHubMultiSpace::Runtime.handle_active_model_for_workspace_toolbar(model)
       rescue StandardError
@@ -680,6 +681,7 @@ module GavinTools
 
       def onActivateModel(model)
         GavinTools::SULinkHubMultiSpace::Runtime.attach_coordinate_observer(model)
+        GavinTools::SULinkHubMultiSpace::Runtime.schedule_soft_bounds_repair!(model)
         GavinTools::SULinkHubMultiSpace::Runtime.handle_active_model_for_status_card(model)
         GavinTools::SULinkHubMultiSpace::Runtime.handle_active_model_for_workspace_toolbar(model)
       rescue StandardError

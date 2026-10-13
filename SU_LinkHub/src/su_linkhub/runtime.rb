@@ -3440,6 +3440,23 @@ module GavinTools
       nil
     end
 
+    # 把同一家具定义的其它实例重新锁上（只处理受管软装、只上锁不解锁）。
+    def relock_soft_furniture_siblings!(entity, model = Sketchup.active_model)
+      return 0 unless entity && entity.valid? && entity.respond_to?(:definition)
+      siblings = entity.definition.instances.select do |instance|
+        instance.valid? && !instance.equal?(entity) && instance.respond_to?(:locked?) && !instance.locked?
+      end
+      return 0 if siblings.empty?
+      model.start_operation('重新锁定同款家具', true, false, true)
+      siblings.each { |instance| instance.locked = true rescue nil }
+      model.commit_operation
+      siblings.length
+    rescue StandardError => e
+      model.abort_operation rescue nil
+      log_exception('重新锁定同款家具失败', e)
+      0
+    end
+
     def guard_native_soft_furniture_entry!(model = Sketchup.active_model)
       return false unless model
       @native_soft_furniture_entry_guard ||= {}
@@ -3458,17 +3475,28 @@ module GavinTools
         suppress_workspace_double_click_rearm!(model, seconds: 0.0)
         @workspace_double_click_rearm_suppress_until&.delete(key)
         model.active_path = (parent_path.empty? ? nil : parent_path) if model.respond_to?(:active_path=)
+        # v0.13.7.7：若用户在 SketchUp 原生提示里点了“全部解锁”，同一家具的其它实例
+        # （含联动副本里的同一件）都被解锁了；立即把它们重新锁上，防止一次编辑改动全部。
+        relocked = relock_soft_furniture_siblings!(entity, model)
         model.selection.clear rescue nil
         model.selection.add(entity) rescue nil
         label = hit[:model_name].to_s
         label = entity.name.to_s if label.empty? && entity.respond_to?(:name)
         label = '家具' if label.empty?
-        log("检测到原生误入受管家具，已退回父层并重新接管：#{label} / #{hit[:representation]} / #{hit[:model_id]}")
-        show_workspace_floating_notice("已阻止直接编辑六面代理 · #{label} · 请再次双击并确认进入真模型", 'info', duration: 3.2, model: model)
+        log("检测到原生误入受管家具，已退回父层并重新接管：#{label} / #{hit[:representation]} / #{hit[:model_id]} / 重新锁定同款 #{relocked} 个")
+        candidate = { entity: entity, id: hit[:model_id].to_s, space_id: hit[:space_id].to_s }
         runtime_start_timer(0.02, false, label: 'soft:native_entry_rearm', key: "soft:native_entry_rearm:#{key}", model: model, active_model_only: true) do
           @workspace_escape_suppress_until&.delete(key) if !model.active_path.nil?
           @workspace_double_click_rearm_suppress_until&.delete(key)
-          arm_workspace_double_click_candidate(model)
+          # 直接改走 LinkHub 安全单件编辑（只让这一件独立，其它同款保持不变），无需再次双击确认。
+          begin
+            edit_soft_proxy_instance_via_double_click!(candidate, model)
+            show_workspace_floating_notice("已自动改为只编辑这一件 · #{label} · 同款其它家具不受影响", 'info', duration: 3.2, model: model)
+          rescue StandardError => edit_error
+            log("原生误入后自动进入安全编辑失败：#{edit_error.message}")
+            show_workspace_floating_notice("已阻止直接编辑共享家具 · #{label} · 请再次双击进入（#{edit_error.message}）", 'info', duration: 4.0, model: model)
+            arm_workspace_double_click_candidate(model)
+          end
         end
       ensure
         @native_soft_furniture_entry_guard.delete(key)
@@ -6468,6 +6496,7 @@ module GavinTools
       # 采购清单名称/路径/资料同步只修改属性和显示名称，不改变几何、材质或实例数量。
       # 在该事务域内直接返回，避免 ModelObserver 把全部空间测量缓存清空。
       return true if soft_metadata_sync_active?(model)
+      soft_invalidate_active_path_bounds!(model)
       mark_soft_individual_edit_transaction_change!(model)
       mark_shared_component_transaction_change!(model)
       mark_space_edit_transaction_change!(model)
@@ -7215,7 +7244,10 @@ module GavinTools
       if link['position_lock_enabled'] && old_axes && new_axes
         old_frame = transformation_from_array(old_axes)
         new_frame = transformation_from_array(new_axes)
-        if old_frame && new_frame
+        if old_frame && new_frame && !(soft_rigid_frame?(old_frame) && soft_rigid_frame?(new_frame))
+          # v0.13.7.7：坐标轴记录带缩放/斜切时不做自动补偿，否则整个模型会被压扁或拉伸。
+          log('联动模型坐标轴记录不是刚体（含缩放/斜切），已跳过自动坐标补偿，保持原位置。')
+        elsif old_frame && new_frame
           old_inverse = safe_inverse_transformation(old_frame, '旧模型坐标轴变换')
           instance.transformation = base * old_inverse * new_frame
           adjusted = transformations_different?(old_axes, new_axes)
@@ -7346,6 +7378,7 @@ module GavinTools
       wrapper.set_attribute(ENTITY_DICT, 'world_wrapper_discipline', key.to_s)
       wrapper.set_attribute(ENTITY_DICT, 'world_wrapper_source', source_path.to_s)
       child = wrapper.entities.add_instance(source_definition, world_frame)
+      soft_invalidate_definition_bounds!(wrapper)
       set_world_source_child_attributes!(child, key, source_path)
       outer = model.entities.add_instance(wrapper, identity_transformation)
       [wrapper, child, outer]
@@ -7361,6 +7394,7 @@ module GavinTools
         next
       end
       child = wrapper.entities.add_instance(source_definition, world_frame)
+      soft_invalidate_definition_bounds!(wrapper)
       set_world_source_child_attributes!(child, key, source_path)
       wrapper.set_attribute(ENTITY_DICT, 'world_wrapper_schema', WORLD_WRAPPER_SCHEMA)
       wrapper.set_attribute(ENTITY_DICT, 'world_wrapper_discipline', key.to_s)
@@ -7375,6 +7409,7 @@ module GavinTools
           definition = child.definition
           result = definition.reload(path)
           raise 'SketchUp 未能重载绝对世界源定义。' if result == false
+          soft_invalidate_definition_bounds!(definition)
           definition.set_attribute(ENTITY_DICT, 'loaded_from_newer_version', false)
           return [definition, child]
         rescue StandardError => error
@@ -10990,6 +11025,7 @@ module GavinTools
             break
           end
           collapsed += 1
+          soft_invalidate_definition_bounds!(root_definition)
           trusted_linkhub_chain = transport_kind == :package ? :package : :payload_done
           remove_unused_definition!(old_definition, model) if old_definition && old_definition.valid?
           log("自动拆平 LinkHub 空间运输壳：#{transport_kind} / #{old_name}")
@@ -11001,6 +11037,7 @@ module GavinTools
         exploded = shell.explode
         break unless exploded
         collapsed += 1
+        soft_invalidate_definition_bounds!(root_definition)
         trusted_linkhub_chain = :none
         remove_unused_definition!(old_definition, model) if old_definition && old_definition.valid?
       end
@@ -13926,6 +13963,8 @@ module GavinTools
       @soft_definition_bounds_cache ||= {}
       if definition
         @soft_definition_bounds_cache.delete(definition.object_id)
+        # v0.13.7.7：同时让 SketchUp 重算原生外包盒（含上层定义），否则读到的是改动前的旧值。
+        soft_invalidate_definition_bounds!(definition) if definition.valid?
         invalidate_soft_representation_pair_cache!(nil, definition: definition) if respond_to?(:invalidate_soft_representation_pair_cache!)
       else
         @soft_definition_bounds_cache.clear
@@ -20157,6 +20196,7 @@ module GavinTools
       contents = entity.definition.entities.to_a
       entity.definition.entities.transform_entities(transformation, contents) unless contents.empty?
       entity.transformation = identity_transformation
+      soft_invalidate_definition_bounds!(entity.definition)
       true
     end
 
@@ -24020,6 +24060,8 @@ module GavinTools
     Kernel.load(File.expand_path('image_media.rb', __dir__))
     # v0.13.7.3：双轴测缩略图视图 + 刷新/反转（thumbnail_views.rb）。
     Kernel.load(File.expand_path('thumbnail_views.rb', __dir__))
+    # v0.13.7.7：组件外包盒一致性（bounds_integrity.rb）。
+    Kernel.load(File.expand_path('bounds_integrity.rb', __dir__))
 
     def record_soft_thumbnail!(source_path, thumb_path, root = soft_library_root, defer: false, apply_views: true)
       return false unless File.file?(source_path) && File.file?(thumb_path) && File.size(thumb_path).positive?
@@ -27382,9 +27424,15 @@ module GavinTools
     def replace_instance_definition_preserving_box!(instance, new_definition)
       raise '实例无效。' unless instance && instance.valid?
       raise '新组件定义无效。' unless new_definition && new_definition.valid?
+      # v0.13.7.7：先让两边外包盒重新计算，绝不按过期尺寸推算缩放（床“变大/压扁”的根因）。
+      soft_invalidate_definition_bounds!(instance.definition, walk_parents: false)
+      soft_invalidate_definition_bounds!(new_definition, walk_parents: false)
       snapshot = soft_instance_box_snapshot(instance)
       old_definition = snapshot[:definition]
-      if soft_definition_bounds_equivalent?(old_definition, new_definition, 1.0e-7)
+      same_furniture_same_size = soft_same_furniture_definitions?(old_definition, new_definition) &&
+                                 soft_definition_extents_close?(old_definition, new_definition)
+      if same_furniture_same_size || soft_definition_bounds_equivalent?(old_definition, new_definition, 1.0e-7)
+        # 同一件家具的代理 ↔ 真模型、尺寸一致：逐位保留原矩阵，反复切换也不会累积漂移。
         instance.definition = new_definition
         instance.transformation = snapshot[:transformation]
       else
@@ -33705,6 +33753,7 @@ module GavinTools
       wrapper.description = definition.description.to_s if wrapper.respond_to?(:description=) && definition.respond_to?(:description)
       payload = wrapper.entities.add_instance(definition, inverse)
       raise '未能建立只改轴的内部模型引用。' unless payload && payload.valid?
+      soft_invalidate_definition_bounds!(wrapper)
       soft_set_attribute_if_changed(payload, SOFT_MODEL_DICT, 'axis_rebase_payload', true)
       inherited_payload = begin
         raw = definition.get_attribute(SOFT_MODEL_DICT, 'library_payload_transform_json', '').to_s
@@ -48222,6 +48271,7 @@ module GavinTools
         begin
           result = definition.reload(mirror_path)
           raise 'SketchUp 未能原位重载本地镜像。' if result == false
+          soft_invalidate_definition_bounds!(definition)
           # 某些模型改变坐标轴后，reload 可能连带改写实例矩阵；先恢复更新前的精确矩阵，
           # 后续再根据源坐标轴元数据做相对补偿。
           instance.transformation = preserved_transform if instance.valid?
@@ -57790,6 +57840,7 @@ module GavinTools
         begin
           result = canonical.respond_to?(:reload) ? canonical.reload(target) : false
           raise 'SketchUp 未能原位重载协同组件。' if result == false
+          soft_invalidate_definition_bounds!(canonical)
         rescue StandardError => reload_error
           if newer_model_version_error?(reload_error)
             loaded = load_definition_compat(model.definitions, target)
@@ -58701,6 +58752,8 @@ module GavinTools
         runtime_start_timer(0.18, false, label: 'edit:restore_root_protection') do
           rebuild_active_edit_root_protections!(Sketchup.active_model)
         end
+        # v0.13.7.7：启动后先修复软装外包盒缓存，再恢复代理队列（避免按旧尺寸替换）。
+        schedule_soft_bounds_repair!(Sketchup.active_model, delay: 0.3) rescue nil
         runtime_start_timer(0.90, false, label: 'soft:proxy_pending_resume_after_boot') do
           begin
             model = Sketchup.active_model

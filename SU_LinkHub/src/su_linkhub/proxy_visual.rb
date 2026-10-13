@@ -444,6 +444,8 @@ module GavinTools
         image.set_attribute(SOFT_MODEL_DICT, 'visual_proxy_view', name)
         image.set_attribute(SOFT_MODEL_DICT, 'visual_proxy_version', SOFT_VISUAL_PROXY_VERSION)
       end
+      # v0.13.7.7：六面图像面建好后让 SketchUp 重算外包盒，选择框与真模型一致。
+      soft_invalidate_definition_bounds!(definition)
       signature = soft_bounds_signature_from_values(values)
       soft_set_attribute_if_changed(definition, SOFT_MODEL_DICT, 'representation', 'proxy')
       soft_set_attribute_if_changed(definition, SOFT_MODEL_DICT, 'managed_tree', true)
