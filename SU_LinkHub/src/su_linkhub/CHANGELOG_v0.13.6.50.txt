@@ -1,0 +1,20 @@
+SU LinkHub v0.13.6.50 · 清单 2/4 卡顿专项修复
+
+本版只处理 v0.13.6.49 截图中“正在准备清单缓存 / 检查本机家具变更版本”长时间停顿。
+
+1. 修复 shared-cache 签名被误当作家具 revision
+- 旧逻辑把 @soft_schedule_last_signatures 的首段直接当 revision。
+- shared-cache|... 会与数字 revision 不相等，可能误触发全项目缓存失效。
+
+2. 禁止该阶段 mark_soft_measurement_dirty(model) 全项目清缓存
+- 大型项目的 location-hit cache 可能持有大量实体/命中记录。
+- clear 后集中释放对象可能触发长时间 Ruby GC，表现正是停在 2/4。
+- 现在只信任事务观察器留下的按空间 dirty 标记，不再因为无法归属的旧 revision 重扫全项目。
+
+3. 该阶段全部改为 O(1) 内存操作，并拆为 5 步
+- 2/5 读取内存家具变更计数
+- 3/5 读取已标记变化空间
+- 4/5 生成刷新键
+- 5/5 准备读取统计缓存
+
+4. 同步修正插件版本显示与日志文件名为 0.13.6.50。

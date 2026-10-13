@@ -1,0 +1,23 @@
+SU LinkHub v0.13.6.98
+
+重点修复：ESC 在空间编辑层级中被 LinkHub 临时 Tool 反复吞掉，导致必须连续狂按 ESC 才偶尔退出。
+
+根因：
+1. WorkspaceDoubleClickBridgeTool 使用 push_tool 捕获双击；ESC 取消后，SelectionObserver 可能马上重新武装并 push 回来。
+2. WorkspaceToolbarClickTool 只要鼠标仍停在顶部工具条/左侧抽屉交互区，也会 push_tool；其旧 onCancel 只关闭自身，并不把 ESC 传递给组件退层。
+3. 两个临时 Tool 可在 Tool 切换/合成 mouse move 后重新挂载，造成原生 SelectionTool 长时间拿不到 ESC。
+
+修复：
+- 新增统一“ESC 稳定退一级”事务。一次 ESC 只让 active_path 减少一级，不粗暴跳过家具编辑层。
+- 事务期间禁止双击桥、工具条点击层及其延迟 timer 重新 push_tool。
+- 双击桥和工具条点击层的用户 ESC 都统一进入该事务。
+- 家具内部退出仍会触发原有自动保存；到空间根再按一次 ESC 才退出到世界根。
+- active_path 目标深度需连续稳定后才结束事务；若 SketchUp 未落地会自动重试，避免用户狂按 ESC。
+- 原生“关闭组件”造成 active_path 深度下降时，也会短暂停挂 LinkHub 临时 Tool，防止刚退出又被干扰。
+- 增加 ESC 退层诊断日志：开始、原生退层检测、完成/超时均写入 SU_LinkHub_v0.13.6.98.log。
+
+继续保留：
+- v0.13.6.97 的 active_path 稳定为空后再锁根/回代理规则与临界状态自愈。
+- 活动软装空间独占真模、离开空间自动回代理、会话真模缓存。
+- v0.13.6.95 六面代理重复生成循环修复。
+- 待提交黄色高亮、队列串行、PACKAGE/PAYLOAD 空壳清理与锁传播保护。

@@ -1,0 +1,8 @@
+SU LinkHub v0.12.9.1
+
+【插件目录自动更新修复】
+- 修复从旧版本热更新后，内存中的 bootstrap 尚未包含 install_archive_and_reload!，点击黄色“重载插件”时报 undefined method 的问题。
+- runtime 侧增加独立兼容安装入口，不再依赖当前会话已经载入最新版 main.rb。
+- 安装 RBZ 后显式重新载入新版 main.rb，再执行 runtime 热重载。
+- 普通热重载与“有新版时安装并重载”分别做接口检查，失败时直接显示具体原因与处理方式。
+- 兼容 SketchUp install_from_archive 的不同参数形式。

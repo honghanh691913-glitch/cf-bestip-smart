@@ -1,0 +1,7 @@
+SU LinkHub v0.13.6.49
+
+- 修复项目软装清单在“空间版本核对完成 / 正在生成结构指纹”后长时间不动。
+- 上下文结构签名改为纯 manifest/内存字段，不再二次访问空间 definition/entity 属性。
+- 上下文差异指纹同样取消实体属性读取；几何变化交给已有 measurement dirty revision。
+- 新增“正在准备清单缓存 1/4~4/4”阶段，明确区分上下文、刷新键、家具统计三个阶段。
+- 刷新键直接复用 context[:structure_signature]，避免重复调用上下文签名函数。

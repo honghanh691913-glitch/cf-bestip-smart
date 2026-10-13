@@ -1,0 +1,11 @@
+SU LinkHub v0.13.6.59
+
+发布原生闪退专项修复
+
+- 根据 2026-09-02 14:44:37 的发布崩溃面包屑，最后阶段锁定为 space_recovery_save_begin。
+- 该阶段旧逻辑会在正式候选前额外调用当前空间 Definition.save_copy/save_as，导致一次发布连续两次原生 Definition 序列化。
+- 取消发布前这次额外原生保存；只准备恢复快照计划。
+- 正式本机候选成功返回、candidate operation 已 abort 后，再把同一个候选文件以纯文件复制方式保存到本机恢复目录。
+- 恢复副本执行大小与完整内容指纹校验，失败则在进入 NAS 正式发布前停止。
+- 新增崩溃阶段：space_recovery_deferred_to_candidate / space_recovery_candidate_copy_begin / space_recovery_candidate_copy_returned。
+- Stable-ID、清单缓存、提交保护、未填坐高筛选等 v0.13.6.58 行为保持不变。

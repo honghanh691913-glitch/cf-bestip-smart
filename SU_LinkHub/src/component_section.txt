@@ -1,0 +1,1481 @@
+    def shared_component_record_from_current_runtime?(record)
+      return false unless shared_component_record_from_same_host?(record)
+      session_id = record['published_session_id'].to_s
+      return session_id == current_runtime_session_id unless session_id.empty?
+      pid = record['published_pid'].to_i
+      return pid == Process.pid if pid.positive?
+      false
+    rescue StandardError
+      false
+    end
+
+    def shared_component_record_from_other_local_runtime?(record)
+      return false unless shared_component_record_from_same_host?(record)
+      !shared_component_record_from_current_runtime?(record)
+    rescue StandardError
+      false
+    end
+
+    def shared_component_remote_update_dirty?(definition, record, model = Sketchup.active_model)
+      return false unless definition && definition.valid? && shared_component_definition?(definition)
+      return true unless record.is_a?(Hash)
+      current = shared_component_content_signature(definition, model)
+      return true if current.empty?
+
+      id = shared_component_definition_id(definition)
+      remote_latest = record['content_signature'].to_s
+
+      # v0.13.6.141：远端更新冲突判断必须以“内容是否偏离可信基线”为真相，不能让
+      # transient runtime dirty 标记一票否决。SketchUp/LinkHub 自己的属性、锁、热重载等
+      # transaction 都可能让这个内存标记短暂/历史性置位；若当前内容仍等于共享最新版、
+      # 当前会话可信基线、空间快照基线、上一发布基线或定义初始基线，就证明没有需要保护
+      # 的本地几何修改，应清掉陈旧标记并允许黄色按钮一键更新。
+      trusted = []
+      trusted << remote_latest unless remote_latest.empty?
+      session_baseline = shared_component_session_baseline_signature(definition, model, establish: false)
+      trusted << session_baseline unless session_baseline.empty?
+      snapshot = definition.get_attribute(SHARED_COMPONENT_DICT, 'space_snapshot_content_signature', '').to_s
+      trusted << snapshot unless snapshot.empty?
+      published = definition.get_attribute(SHARED_COMPONENT_DICT, 'published_content_signature', '').to_s
+      trusted << published unless published.empty?
+      origin = definition.get_attribute(SHARED_COMPONENT_DICT, 'origin_content_signature', '').to_s
+      origin = record['origin_content_signature'].to_s if origin.empty?
+      trusted << origin unless origin.empty?
+
+      if trusted.any? { |signature| signature == current }
+        # 单个 Definition 命中可信基线，只证明这个 Definition 安全；同一协同 ID 可能在
+        # 其它空间里还有另一个 Definition 正在本地编辑，不能在这里把整个组件 ID 的 dirty 清掉。
+        return false
+      end
+
+      # 到这里说明当前几何已经偏离所有可验证的安全基线。若当前会话确实观察到组件内部
+      # transaction，就按真实本地修改保护；即便发布者来自同一台电脑的另一个 SU 也不能覆盖。
+      return true if shared_component_runtime_dirty_marked?(definition, model)
+
+      # 有可信会话基线且当前内容已经偏离，也属于当前 SU 会话产生的本地变化。
+      return true if !session_baseline.empty? && current != session_baseline
+
+      # 同一主机另一 SketchUp 是独立协作端，但只有在本端没有证据表明内容被继续修改时
+      # 才允许更新。这里没有命中任何可信基线，因此仍保持保守，避免热重载后覆盖真实工作。
+      # 没有任何可验证基线同样保守阻止。
+      true
+    rescue StandardError => e
+      log_exception('判断协同组件远端更新当前会话修改状态失败', e)
+      true
+    end
+
+    def align_shared_component_metadata_to_remote!(definitions, record, model = Sketchup.active_model)
+      rows = Array(definitions).select { |definition| definition && definition.valid? }
+      return false if rows.empty? || !record.is_a?(Hash)
+      remote_signature = record['content_signature'].to_s
+      return false if remote_signature.empty?
+      signatures = rows.map { |definition| shared_component_content_signature(definition, model) }
+      return false if signatures.any?(&:empty?) || signatures.any? { |signature| signature != remote_signature }
+
+      id = record['id'].to_s
+      name = record['name'].to_s.strip
+      name = '协同组件' if name.empty?
+      origin = record['origin_content_signature'].to_s
+      origin = remote_signature if origin.empty?
+      model.start_operation("对齐协同组件版本 #{name}", true)
+      with_shared_component_sync_guard do
+        rows.each do |definition|
+          definition.set_attribute(SHARED_COMPONENT_DICT, 'schema', SHARED_COMPONENTS_SCHEMA)
+          definition.set_attribute(SHARED_COMPONENT_DICT, 'id', id) unless id.empty?
+          definition.set_attribute(SHARED_COMPONENT_DICT, 'name', name)
+          definition.set_attribute(SHARED_COMPONENT_DICT, 'definition_guid', record['definition_guid'].to_s)
+          definition.set_attribute(SHARED_COMPONENT_DICT, 'origin_content_signature', origin)
+          definition.set_attribute(SHARED_COMPONENT_DICT, 'revision', record['revision'].to_s)
+          definition.set_attribute(SHARED_COMPONENT_DICT, 'source_signature', record['signature'].to_s)
+          definition.set_attribute(SHARED_COMPONENT_DICT, 'published_content_signature', remote_signature)
+          definition.set_attribute(SHARED_COMPONENT_DICT, 'space_snapshot_content_signature', remote_signature)
+        end
+      end
+      model.commit_operation
+      @shared_component_dirty_ids ||= {}
+      (@shared_component_dirty_ids[model.object_id] ||= {}).delete(id) unless id.empty?
+      rows.each do |definition|
+        invalidate_shared_component_signature_cache!(definition, model)
+        reset_shared_component_session_baseline!(definition, model, signature: remote_signature)
+      end
+      true
+    rescue StandardError
+      model.abort_operation rescue nil
+      raise
+    end
+
+    def stamp_shared_component_space_snapshot_baselines!(entity, model = Sketchup.active_model)
+      return 0 unless entity && entity.valid? && entity.respond_to?(:definition)
+      count = 0
+      collect_space_definition_graph(entity.definition).each do |definition|
+        next unless definition && definition.valid? && shared_component_definition?(definition)
+        signature = shared_component_content_signature(definition, model)
+        next if signature.empty?
+        definition.set_attribute(SHARED_COMPONENT_DICT, 'space_snapshot_content_signature', signature)
+        count += 1
+      end
+      count
+    rescue StandardError => e
+      log_exception('记录空间快照协同组件基线失败', e)
+      0
+    end
+
+    # 空间 SKP 的载入/更新属于“远端快照落地”，不是当前 SU 的用户编辑。成功 fresh-load 后
+    # 立即以实际载入几何重建每个协同组件的 space snapshot baseline，避免旧包元数据、定义碰撞
+    # 隔离或空间更新事务被误认为本地未发布修改。这里只更新 snapshot/session baseline，不改
+    # published revision；因此黄色组件更新仍能正确发现共享资产比当前空间快照更新。
+    def rebase_loaded_space_shared_component_snapshots!(entity, model = Sketchup.active_model)
+      return 0 unless entity && entity.valid? && entity.respond_to?(:definition)
+      count = 0
+      ids = []
+      collect_space_definition_graph(entity.definition).each do |definition|
+        next unless definition && definition.valid? && shared_component_definition?(definition)
+        invalidate_shared_component_signature_cache!(definition, model)
+        signature = shared_component_content_signature(definition, model)
+        next if signature.empty?
+        definition.set_attribute(SHARED_COMPONENT_DICT, 'space_snapshot_content_signature', signature)
+        reset_shared_component_session_baseline!(definition, model, signature: signature)
+        ids << shared_component_definition_id(definition)
+        count += 1
+      end
+      log("空间载入已重建协同组件快照基线：#{count} 个 Definition / #{ids.reject(&:empty?).uniq.length} 个组件") if count.positive?
+      count
+    rescue StandardError => e
+      log_exception('重建空间载入协同组件快照基线失败', e)
+      0
+    end
+
+    def shared_component_dirty_records(model = Sketchup.active_model)
+      grouped = shared_component_definitions(model).group_by { |definition| shared_component_definition_id(definition) }
+      grouped.filter_map do |id, definitions|
+        definition = definitions.max_by { |row| row.instances.length rescue 0 }
+        next unless definition && shared_component_dirty?(definition, model)
+        { id: id.to_s, name: shared_component_definition_name(definition), definition: definition }
+      end
+    rescue StandardError
+      []
+    end
+
+    def shared_component_active_id(model = Sketchup.active_model)
+      instance = active_shared_component_instance(model)
+      instance ? shared_component_definition_id(instance.definition) : ''
+    rescue StandardError
+      ''
+    end
+
+    def mark_shared_component_transaction_change!(model = Sketchup.active_model)
+      return false unless model
+      return false if publish_critical_section? || publish_post_quiet?
+      return false if @shared_component_sync_depth.to_i.positive?
+      instance = active_shared_component_instance(model)
+      return false unless instance && instance.valid?
+      definition = instance.definition
+      id = shared_component_definition_id(definition)
+      return false if id.empty?
+      @shared_component_dirty_ids ||= {}
+      (@shared_component_dirty_ids[model.object_id] ||= {})[id] = true
+      invalidate_shared_component_signature_cache!(definition, model)
+      true
+    rescue StandardError
+      false
+    end
+
+    def transaction_inside_shared_component_below?(path, root_index)
+      return false if root_index.nil?
+      Array(path[(root_index + 1)..]).any? do |entity|
+        entity && entity.valid? && entity.is_a?(Sketchup::ComponentInstance) && shared_component_definition?(entity.definition)
+      rescue StandardError
+        false
+      end
+    rescue StandardError
+      false
+    end
+
+    def with_shared_component_sync_guard
+      @shared_component_sync_depth = @shared_component_sync_depth.to_i + 1
+      yield
+    ensure
+      @shared_component_sync_depth = [@shared_component_sync_depth.to_i - 1, 0].max
+    end
+
+    def shared_component_asset_path(component_id, state = nil, model = Sketchup.active_model)
+      state ||= load_state(model)
+      dir = shared_components_assets_dir(state, model)
+      raise '请先连接有效的 LinkHub 协同项目。' if dir.to_s.empty?
+      FileUtils.mkdir_p(dir)
+      safe_id = component_id.to_s.gsub(/[^0-9A-Za-z_-]/, '')
+      raise '协同组件 ID 无效。' if safe_id.empty?
+      File.join(dir, "#{safe_id}.skp")
+    end
+
+    def shared_component_manifest_asset_path(record, state = nil, model = Sketchup.active_model)
+      state ||= load_state(model)
+      project_dir = selected_collab_project_dir_for_state(state, model).to_s
+      raw = record.is_a?(Hash) ? record['file'].to_s : ''
+      return '' if raw.empty? || project_dir.empty?
+      resolve_space_manifest_file(project_dir, raw)
+    rescue StandardError
+      ''
+    end
+
+    def define_selected_shared_component(model = Sketchup.active_model)
+      entity = selected_shared_component_instance(model, allow_unmanaged: true)
+      raise '请只选中一个普通 SketchUp 组件实例；群组和 LinkHub 空间根不会直接定义为协同组件。' unless entity
+      definition = entity.definition
+      existing_id = shared_component_definition_id(definition)
+      unless existing_id.empty?
+        show_status("#{shared_component_definition_name(definition)} 已是协同组件。", 'info')
+        return true
+      end
+      state = load_state(model)
+      root = shared_components_root(state, model)
+      raise '请先连接有效的 LinkHub 协同项目。' if root.to_s.empty?
+      id = SecureRandom.uuid
+      name = definition.name.to_s.strip
+      name = entity.name.to_s.strip if name.empty? && entity.respond_to?(:name)
+      name = '协同组件' if name.empty?
+      origin_signature = shared_component_content_signature(definition, model)
+      raise '当前组件无法生成可靠内容签名，暂不能定义为协同组件。' if origin_signature.empty?
+      definition_guid = definition.respond_to?(:guid) ? definition.guid.to_s : ''
+      equivalent_definitions = equivalent_component_definitions(definition, model)
+      equivalent_definitions = [definition] if equivalent_definitions.empty?
+      model.start_operation('定义 LinkHub 协同组件', true)
+      equivalent_definitions.each do |candidate|
+        candidate.set_attribute(SHARED_COMPONENT_DICT, 'schema', SHARED_COMPONENTS_SCHEMA)
+        candidate.set_attribute(SHARED_COMPONENT_DICT, 'id', id)
+        candidate.set_attribute(SHARED_COMPONENT_DICT, 'name', name)
+        candidate.set_attribute(SHARED_COMPONENT_DICT, 'definition_guid', definition_guid)
+        candidate.set_attribute(SHARED_COMPONENT_DICT, 'origin_content_signature', origin_signature)
+        candidate.set_attribute(SHARED_COMPONENT_DICT, 'revision', '')
+        candidate.set_attribute(SHARED_COMPONENT_DICT, 'source_signature', '')
+        candidate.set_attribute(SHARED_COMPONENT_DICT, 'published_content_signature', '')
+        candidate.set_attribute(SHARED_COMPONENT_DICT, 'space_snapshot_content_signature', origin_signature)
+      end
+      model.commit_operation
+      equivalent_definitions.each do |candidate|
+        invalidate_shared_component_signature_cache!(candidate, model)
+        reset_shared_component_session_baseline!(candidate, model, signature: origin_signature)
+      end
+      @shared_component_dirty_ids ||= {}
+      (@shared_component_dirty_ids[model.object_id] ||= {})[id] = true
+      mark_current_space_session_shared_component_change!(id, model)
+      # v0.13.6.136：定义只建立身份并缓存 dirty，不再立刻产生第二个“上传组件”动作。
+      # 首次组件共享版本会在用户发布任意一个包含它的空间时自动一并提交。
+      show_status("#{name} 已定义为协同组件；随包含它的空间发布同步", 'success')
+      refresh_workspace_toolbar(model) rescue nil
+      true
+    rescue StandardError => e
+      model.abort_operation rescue nil
+      log_exception('定义协同组件失败', e)
+      show_status("定义协同组件失败：#{e.message}", 'error')
+      false
+    end
+
+    def publish_shared_component_by_id(component_id, model = Sketchup.active_model, first_publish: false, notify: true, refresh: true, source_space_id: '', source_space_label: '')
+      id = component_id.to_s
+      definition = shared_component_definition_for_id(id, model)
+      raise '当前模型中找不到该协同组件。' unless definition && definition.valid?
+      if shared_component_active_id(model) == id
+        raise '请先退出该协同组件的内部编辑层级，再发布组件。'
+      end
+      state = load_state(model)
+      manifest = read_shared_components_manifest(state, model, force: true)
+      record = shared_component_manifest_record(manifest, id)
+      target = record ? shared_component_manifest_asset_path(record, state, model) : ''
+      target = shared_component_asset_path(id, state, model) if target.to_s.empty?
+      if File.file?(target) && !record
+        raise '共享组件文件已经存在但清单缺少版本记录；为避免覆盖未知版本，已停止发布。'
+      end
+      expected = record ? record['signature'].to_s : ''
+      expected = fast_file_signature(target) if record && expected.empty? && File.file?(target)
+      if record
+        local_revision = definition.get_attribute(SHARED_COMPONENT_DICT, 'revision', '').to_s
+        remote_revision = record['revision'].to_s
+        if local_revision.empty? || (!remote_revision.empty? && local_revision != remote_revision)
+          raise '该协同组件在当前 SU 会话修改期间已有更新版本；为避免覆盖，请先更新共享组件后再修改。'
+        end
+      end
+      content_signature = shared_component_content_signature(definition, model)
+      raise '协同组件内容无法生成可靠签名，已停止发布。' if content_signature.empty?
+      origin_signature = definition.get_attribute(SHARED_COMPONENT_DICT, 'origin_content_signature', '').to_s
+      origin_signature = record['origin_content_signature'].to_s if origin_signature.empty? && record
+      origin_signature = record['content_signature'].to_s if origin_signature.empty? && record
+      origin_signature = content_signature if origin_signature.empty?
+      definition_guid = definition.get_attribute(SHARED_COMPONENT_DICT, 'definition_guid', '').to_s
+      definition_guid = record['definition_guid'].to_s if definition_guid.empty? && record
+      definition_guid = (definition.respond_to?(:guid) ? definition.guid.to_s : '') if definition_guid.empty?
+      if record && !shared_component_dirty?(definition, model) && record['revision'].to_s == definition.get_attribute(SHARED_COMPONENT_DICT, 'revision', '').to_s
+        show_status("#{shared_component_definition_name(definition)} 没有新的组件修改。", 'info') if notify && !first_publish
+        return true
+      end
+
+      name = shared_component_definition_name(definition)
+      revision = new_publish_revision("component-#{id}")
+      old_revision = definition.get_attribute(SHARED_COMPONENT_DICT, 'revision', '').to_s
+      old_published = definition.get_attribute(SHARED_COMPONENT_DICT, 'published_content_signature', '').to_s
+      guard = false
+      success = false
+      error = nil
+      begin
+        guard = enter_publish_critical_section!(
+          kind: 'shared_component',
+          subject: "协同组件 #{name}",
+          target: target,
+          model: model
+        )
+        model.start_operation("准备协同组件 #{name}", true)
+        definition.set_attribute(SHARED_COMPONENT_DICT, 'schema', SHARED_COMPONENTS_SCHEMA)
+        definition.set_attribute(SHARED_COMPONENT_DICT, 'id', id)
+        definition.set_attribute(SHARED_COMPONENT_DICT, 'name', name)
+        definition.set_attribute(SHARED_COMPONENT_DICT, 'definition_guid', definition_guid)
+        definition.set_attribute(SHARED_COMPONENT_DICT, 'origin_content_signature', origin_signature)
+        definition.set_attribute(SHARED_COMPONENT_DICT, 'revision', revision)
+        definition.set_attribute(SHARED_COMPONENT_DICT, 'published_content_signature', content_signature)
+        model.commit_operation
+        result = atomic_publish_definition(
+          definition,
+          target,
+          "shared_component_#{id}",
+          { 'name' => "协同组件 #{name}" },
+          expected_signature: expected
+        )
+        upsert_shared_component_manifest_record!(
+          state,
+          {
+            'id' => id,
+            'name' => name,
+            'file' => target,
+            'signature' => result[:signature].to_s,
+            'content_signature' => content_signature,
+            'origin_content_signature' => origin_signature,
+            'definition_guid' => definition_guid,
+            'revision' => revision,
+            'published_at' => Time.now.iso8601(6),
+            'published_by' => current_user_name,
+            'published_host' => current_host_name,
+            'published_pid' => Process.pid,
+            'published_session_id' => current_runtime_session_id,
+            'source_space_id' => source_space_id.to_s,
+            'source_space_label' => source_space_label.to_s,
+            'plugin_version' => EXTENSION_VERSION
+          },
+          model
+        )
+        model.start_operation("记录协同组件 #{name} 版本", true)
+        definition.set_attribute(SHARED_COMPONENT_DICT, 'definition_guid', definition_guid)
+        definition.set_attribute(SHARED_COMPONENT_DICT, 'origin_content_signature', origin_signature)
+        definition.set_attribute(SHARED_COMPONENT_DICT, 'revision', revision)
+        definition.set_attribute(SHARED_COMPONENT_DICT, 'source_signature', result[:signature].to_s)
+        definition.set_attribute(SHARED_COMPONENT_DICT, 'published_content_signature', content_signature)
+        definition.set_attribute(SHARED_COMPONENT_DICT, 'space_snapshot_content_signature', content_signature)
+        model.commit_operation
+        @shared_component_dirty_ids ||= {}
+        (@shared_component_dirty_ids[model.object_id] ||= {}).delete(id)
+        invalidate_shared_component_signature_cache!(definition, model)
+        reset_shared_component_session_baseline!(definition, model, signature: content_signature)
+        success = true
+        show_status("#{name} 组件已发布", 'success') if notify
+        refresh_workspace_toolbar(model) rescue nil if refresh
+        true
+      rescue StandardError => e
+        error = e
+        model.abort_operation rescue nil
+        begin
+          model.start_operation('恢复协同组件发布标记', true)
+          definition.set_attribute(SHARED_COMPONENT_DICT, 'revision', old_revision)
+          definition.set_attribute(SHARED_COMPONENT_DICT, 'published_content_signature', old_published)
+          model.commit_operation
+        rescue StandardError
+          model.abort_operation rescue nil
+        end
+        invalidate_shared_component_signature_cache!(definition, model)
+        raise
+      ensure
+        leave_publish_critical_section!(success: success, error: error, model: model) if guard
+      end
+    end
+
+    def enqueue_shared_component_publish_plan_from_space!(job, model = Sketchup.active_model)
+      plan = Array(job.is_a?(Hash) ? job[:shared_component_publish_plan] : nil).select { |row| row.is_a?(Hash) && !row[:id].to_s.empty? }
+      return false if plan.empty? || !model
+      @shared_component_auto_publish_queue ||= []
+      @shared_component_auto_publish_batches ||= {}
+      batch_id = job[:job_id].to_s
+      batch_id = "component-batch-#{SecureRandom.hex(4)}" if batch_id.empty?
+      batch = (@shared_component_auto_publish_batches[batch_id] ||= {
+        label: job[:label].to_s,
+        total: 0,
+        completed: 0,
+        success: 0,
+        failed: [],
+        skipped: []
+      })
+      added = 0
+      plan.each do |row|
+        duplicate = @shared_component_auto_publish_queue.any? do |queued|
+          queued[:model_object_id].to_i == model.object_id &&
+            queued[:id].to_s == row[:id].to_s &&
+            queued[:content_signature].to_s == row[:content_signature].to_s &&
+            queued[:batch_id].to_s == batch_id
+        end
+        next if duplicate
+        @shared_component_auto_publish_queue << {
+          batch_id: batch_id,
+          model: model,
+          model_object_id: model.object_id,
+          model_path: model.path.to_s,
+          id: row[:id].to_s,
+          name: row[:name].to_s,
+          content_signature: row[:content_signature].to_s,
+          source_space_id: job[:space_id].to_s,
+          source_space_label: job[:label].to_s
+        }
+        added += 1
+      end
+      batch[:total] = batch[:total].to_i + added
+      return false if added.zero?
+      show_workspace_floating_notice(
+        "#{job[:label]} 已发布 · 同步 #{added} 个协同组件",
+        'info', progress: 0, persistent: true, model: model
+      )
+      ensure_shared_component_auto_publish_timer!
+      true
+    rescue StandardError => e
+      log_exception('加入空间附带协同组件发布队列失败', e)
+      false
+    end
+
+    def ensure_shared_component_auto_publish_timer!
+      return true if @shared_component_auto_publish_timer
+      timer_id = nil
+      timer_id = runtime_start_timer(0.30, true, label: 'shared_component:auto_publish') do
+        begin
+          process_shared_component_auto_publish_queue!
+          queue_empty = !@shared_component_auto_publish_queue || @shared_component_auto_publish_queue.empty?
+          if queue_empty
+            runtime_stop_timer(timer_id) if timer_id
+            @shared_component_auto_publish_timer = nil
+          end
+        rescue StandardError => e
+          log_exception('协同组件随空间自动发布轮询失败', e)
+        end
+      end
+      @shared_component_auto_publish_timer = timer_id
+      true
+    rescue StandardError => e
+      log_exception('启动协同组件随空间自动发布轮询失败', e)
+      false
+    end
+
+    def finish_shared_component_auto_publish_batch_if_ready!(batch_id, model = Sketchup.active_model)
+      batches = @shared_component_auto_publish_batches || {}
+      batch = batches[batch_id.to_s]
+      return false unless batch.is_a?(Hash)
+      return false if batch[:completed].to_i < batch[:total].to_i
+      failed = Array(batch[:failed])
+      skipped = Array(batch[:skipped])
+      success_count = batch[:success].to_i
+      label = batch[:label].to_s
+      if failed.empty? && skipped.empty?
+        show_workspace_floating_notice(
+          "#{label} 发布完成 · #{success_count} 个协同组件已同步",
+          'success', progress: 100, duration: 3.2, model: model
+        )
+      else
+        detail = []
+        detail << "#{success_count} 个已同步" if success_count.positive?
+        detail << "#{skipped.length} 个留待下次发布" unless skipped.empty?
+        detail << "#{failed.length} 个同步失败" unless failed.empty?
+        show_workspace_floating_notice(
+          "#{label} 空间已发布 · #{detail.join(' · ')}",
+          failed.empty? ? 'warning' : 'error', progress: 100, duration: 5.0, model: model
+        )
+      end
+      batches.delete(batch_id.to_s)
+      refresh_workspace_toolbar(model) rescue nil
+      true
+    rescue StandardError => e
+      log_exception('完成空间附带协同组件发布批次失败', e)
+      false
+    end
+
+    def process_shared_component_auto_publish_queue!
+      queue = @shared_component_auto_publish_queue ||= []
+      return false if queue.empty?
+      return false if publish_critical_section? || publish_post_quiet? || publish_min_interval_remaining.positive? ||
+                      @updating || @single_space_update_job || @space_batch_update_job || @shared_component_batch_update_job || @consistency_update_job
+      model = Sketchup.active_model
+      return false unless model
+      index = queue.index do |row|
+        row[:model_object_id].to_i == model.object_id || (!row[:model_path].to_s.empty? && !model.path.to_s.empty? && same_file_path?(row[:model_path].to_s, model.path.to_s))
+      end
+      return false unless index
+      item = queue.delete_at(index)
+      batch = (@shared_component_auto_publish_batches || {})[item[:batch_id].to_s]
+      return false unless batch.is_a?(Hash)
+      name = item[:name].to_s.empty? ? '协同组件' : item[:name].to_s
+      definition = shared_component_definition_for_id(item[:id].to_s, model)
+      if !definition || !definition.valid?
+        batch[:skipped] << { id: item[:id].to_s, name: name, reason: 'missing' }
+      else
+        current_signature = shared_component_content_signature(definition, model)
+        unless shared_component_dirty?(definition, model)
+          # 可能已被另一空间批次先行同步；这属于成功收口，不重复写共享文件。
+          batch[:success] = batch[:success].to_i + 1
+        else
+          if current_signature.to_s.empty? || current_signature.to_s != item[:content_signature].to_s
+            # 用户在空间进入后台后又从别处继续改了同一个 Definition。绝不能把未来内容
+            # 冒充本次空间发布的附带组件；保留 dirty，等下一次包含它的空间发布。
+            batch[:skipped] << { id: item[:id].to_s, name: name, reason: 'changed_after_queue' }
+            log("协同组件附带发布已延后：#{name} / 排队后内容再次变化")
+          else
+            begin
+              ok = publish_shared_component_by_id(item[:id].to_s, model, notify: false, refresh: false, source_space_id: item[:source_space_id].to_s, source_space_label: item[:source_space_label].to_s)
+              if ok
+                batch[:success] = batch[:success].to_i + 1
+              else
+                batch[:failed] << { id: item[:id].to_s, name: name }
+              end
+            rescue StandardError => e
+              message = e.message.to_s
+              # 组件同步属于空间发布的自动尾任务。若刚好碰到原生保存收尾或另一个
+              # 发布临界区，不应向用户报“同步失败”；把同一项放回队列，等待安全窗口
+              # 后自动重试。真正的内容冲突/文件错误仍按失败处理。
+              retryable = message.include?('上一次发布仍在原生收尾') ||
+                          message.include?('另一个发布任务仍在进行')
+              if retryable
+                item[:retry_count] = item[:retry_count].to_i + 1
+                queue.unshift(item)
+                log("协同组件附带发布等待重试：#{name} / #{message} / retry=#{item[:retry_count]}")
+                return false
+              end
+              batch[:failed] << { id: item[:id].to_s, name: name, error: message }
+              log_exception("空间附带发布协同组件失败：#{name}", e)
+            end
+          end
+        end
+      end
+      batch[:completed] = batch[:completed].to_i + 1
+      progress = batch[:total].to_i.positive? ? batch[:completed].to_f * 100.0 / batch[:total].to_i : 100.0
+      if batch[:completed].to_i < batch[:total].to_i
+        show_workspace_floating_notice(
+          "#{batch[:label]} · 协同组件 #{batch[:completed]}/#{batch[:total]}",
+          'info', progress: progress, persistent: true, model: model
+        )
+      end
+      finish_shared_component_auto_publish_batch_if_ready!(item[:batch_id], model)
+      true
+    rescue StandardError => e
+      log_exception('执行空间附带协同组件发布失败', e)
+      false
+    end
+
+    def shared_component_remote_update_records(model = Sketchup.active_model, state = nil, force: false)
+      state ||= load_state(model)
+      manifest = read_shared_components_manifest(state, model, force: force)
+      local = shared_component_live_definitions(model, force: force).group_by { |definition| shared_component_definition_id(definition) }
+      Array(manifest['components']).filter_map do |record|
+        next unless record.is_a?(Hash)
+        id = record['id'].to_s
+        definitions = local[id]
+        next if id.empty? || definitions.nil? || definitions.empty?
+        remote_revision = record['revision'].to_s
+        next if remote_revision.empty?
+        local_revisions = definitions.map { |definition| definition.get_attribute(SHARED_COMPONENT_DICT, 'revision', '').to_s }.uniq
+        # 即使已绑定的那一份 Definition 已经是远端最新版，只要当前模型里还有旧空间的
+        # 未绑定同源 Definition，也仍然必须保留“组件更新”入口，把这些空间一并接入并刷新。
+        unbound_matches = local_component_definitions_matching_record(record, model).select do |candidate|
+          shared_component_definition_id(candidate).empty?
+        end
+        divergent_unbound = unbound_matches.reject { |candidate| shared_component_unbound_shape_safe?(candidate, record, model) }
+        next if local_revisions.length == 1 && local_revisions.first == remote_revision && unbound_matches.empty?
+        definition = definitions.max_by { |row| row.instances.length rescue 0 }
+        {
+          id: id,
+          name: record['name'].to_s.empty? ? shared_component_definition_name(definition) : record['name'].to_s,
+          record: record,
+          definition: definition,
+          unbound_matches: unbound_matches,
+          divergent_unbound: divergent_unbound,
+          dirty: !divergent_unbound.empty? || definitions.any? { |row| shared_component_remote_update_dirty?(row, record, model) }
+        }
+      end
+    rescue StandardError => e
+      log_exception('检查协同组件更新失败', e)
+      []
+    end
+
+    def shared_component_bulk_update_plan(model = Sketchup.active_model, state = nil, force: false)
+      state ||= load_state(model)
+      # force=true 时先强制刷新一次 manifest，后续 discoverable 查询会命中新缓存。
+      read_shared_components_manifest(state, model, force: true) if force
+      rows = []
+      blocked = []
+      seen = {}
+
+      shared_component_remote_update_records(model, state, force: force).each do |remote|
+        id = remote[:id].to_s
+        next if id.empty? || seen[id]
+        seen[id] = true
+        record = remote[:record].is_a?(Hash) ? remote[:record] : {}
+        definitions = shared_component_live_definitions(model, component_id: id, force: true)
+        adopt_definitions = Array(remote[:unbound_matches]).select do |definition|
+          definition && definition.valid? && shared_component_definition_id(definition).empty? &&
+            shared_component_unbound_shape_safe?(definition, record, model)
+        end
+        all_definitions = (definitions + adopt_definitions).uniq
+        instance_count = all_definitions.sum do |definition|
+          Array(definition.instances).count { |instance| instance && instance.valid? && instance.is_a?(Sketchup::ComponentInstance) }
+        rescue StandardError
+          0
+        end
+        row = {
+          id: id,
+          name: remote[:name].to_s,
+          kind: :bound,
+          record: record,
+          adopt_definitions: adopt_definitions,
+          instance_count: instance_count,
+          published_by: record['published_by'].to_s,
+          published_at: record['published_at'].to_s,
+          published_host: record['published_host'].to_s,
+          published_pid: record['published_pid'].to_i,
+          published_session_id: record['published_session_id'].to_s,
+          source_space_id: record['source_space_id'].to_s,
+          source_space_label: record['source_space_label'].to_s
+        }
+        if remote[:dirty]
+          blocked << row.merge(reason: 'local_dirty')
+        else
+          rows << row
+        end
+      end
+
+      discoverable_shared_component_update_records(model, state).each do |remote|
+        id = remote[:id].to_s
+        next if id.empty? || seen[id]
+        seen[id] = true
+        record = remote[:record].is_a?(Hash) ? remote[:record] : {}
+        definitions = Array(remote[:definitions]).select { |definition| definition && definition.valid? }
+        instance_count = definitions.sum do |definition|
+          Array(definition.instances).count { |instance| instance && instance.valid? && instance.is_a?(Sketchup::ComponentInstance) }
+        rescue StandardError
+          0
+        end
+        rows << {
+          id: id,
+          name: remote[:name].to_s,
+          kind: :adopt,
+          record: record,
+          definitions: definitions,
+          instance_count: instance_count,
+          published_by: record['published_by'].to_s,
+          published_at: record['published_at'].to_s,
+          published_host: record['published_host'].to_s,
+          published_pid: record['published_pid'].to_i,
+          published_session_id: record['published_session_id'].to_s,
+          source_space_id: record['source_space_id'].to_s,
+          source_space_label: record['source_space_label'].to_s
+        }
+      end
+
+      { rows: rows, blocked: blocked }
+    rescue StandardError => e
+      log_exception('汇总协同组件更新失败', e)
+      { rows: [], blocked: [] }
+    end
+
+    def shared_component_display_time(value)
+      text = value.to_s.strip
+      return '时间未知' if text.empty?
+      if (match = text.match(/\A(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/))
+        "#{match[1]} #{match[2]}"
+      else
+        text[0, 16]
+      end
+    rescue StandardError
+      value.to_s
+    end
+
+    def shared_component_update_confirmation_text(rows, blocked = [])
+      rows = Array(rows)
+      blocked = Array(blocked)
+      instance_count = rows.sum { |row| row[:instance_count].to_i }
+      lines = rows.first(8).map do |row|
+        name = row[:name].to_s.empty? ? '协同组件' : row[:name].to_s
+        actor = row[:published_by].to_s.empty? ? '未知成员' : row[:published_by].to_s
+        record = {
+          'published_host' => row[:published_host].to_s,
+          'published_pid' => row[:published_pid].to_i,
+          'published_session_id' => row[:published_session_id].to_s
+        }
+        actor += '（本机另一 SU）' if shared_component_record_from_other_local_runtime?(record)
+        "• #{name} — #{actor} · #{shared_component_display_time(row[:published_at])}"
+      end
+      lines << "• 另有 #{rows.length - 8} 个组件…" if rows.length > 8
+      text = "检测到 #{rows.length} 个协同组件更新，共影响当前模型 #{instance_count} 个实例。\n\n提交记录：\n#{lines.join("\n")}"
+      unless blocked.empty?
+        text += "\n\n另有 #{blocked.length} 个组件在当前 SU 会话中有未发布修改，为避免覆盖将暂时跳过。"
+      end
+      text + "\n\n确认更新全部可安全更新的协同组件？"
+    end
+
+    # v0.13.6.144：空间与协同组件在接收端也采用同一个“一致性更新”事务。
+    # 发布侧已经是“发布空间 -> 自动附带组件资产”，更新侧如果仍要求用户先更新空间、
+    # 再点一次黄色组件按钮，会让同一个共享提交在本机短暂处于半新半旧状态。这里把
+    # 顶部黄色按钮和抽屉空间卡片统一到同一套计划：一次确认、顺序载入空间、再统一刷新组件。
+    def consistency_space_update_row(item, model = Sketchup.active_model)
+      return nil unless item.is_a?(Hash)
+      {
+        id: item['id'].to_s,
+        label: space_ui_label(item),
+        published_by: item['last_publish_by'].to_s,
+        published_at: item['last_publish_at'].to_s,
+        collection_key: space_record_collection_key(item)
+      }
+    rescue StandardError
+      nil
+    end
+
+    def consistency_space_update_pending?(item, model = Sketchup.active_model)
+      return false unless item.is_a?(Hash) && !linked_space_record?(item)
+      return false if initial_space_publish_pending?(item) || background_publish_active_state?(item)
+      state = load_state(model)
+      return false if space_force_recovery_active?(item, state)
+      return false if local_space_edit_session?(item, state, model)
+      source = auto_relocate(item['model_path'].to_s, model)
+      return false unless File.file?(source)
+      entity = space_model_entity(item['id'].to_s, model)
+      space_update_direction(item, entity, source) == :newer
+    rescue StandardError
+      false
+    end
+
+    # 顶部黄色按钮优先使用组件清单记录的 source_space_id，精准找到“这批组件是随哪个
+    # 空间发布出来的”。兼容 144 之前没有该字段的旧组件版本：若当前恰好只有一个空间
+    # 待更新，则把它视为本次一致性更新的空间部分；多个候选时不猜，避免误载入其它空间。
+    def consistency_space_rows_for_component_updates(component_rows, state, model = Sketchup.active_model)
+      source_ids = Array(component_rows).map { |row| row[:source_space_id].to_s }.reject(&:empty?).uniq
+      rows = []
+      if source_ids.any?
+        source_ids.each do |space_id|
+          item = space_model_record(state, space_id)
+          next unless item && consistency_space_update_pending?(item, model)
+          row = consistency_space_update_row(item, model)
+          rows << row if row
+        end
+      else
+        pending = Array(state['space_models']).select { |item| consistency_space_update_pending?(item, model) }
+        if pending.length == 1
+          row = consistency_space_update_row(pending.first, model)
+          rows << row if row
+        end
+      end
+      rows.uniq { |row| row[:id].to_s }
+    rescue StandardError => e
+      log_exception('汇总协同组件关联空间更新失败', e)
+      []
+    end
+
+    def shared_component_update_rows_for_space(item, rows, model = Sketchup.active_model)
+      return [] unless item.is_a?(Hash)
+      space_id = item['id'].to_s
+      entity = space_model_entity(space_id, model)
+      graph = if entity && entity.valid? && entity.respond_to?(:definition)
+                collect_space_definition_graph(entity.definition)
+              else
+                []
+              end
+      graph_object_ids = graph.each_with_object({}) { |definition, memo| memo[definition.object_id] = true if definition && definition.valid? }
+      graph_ids = graph.map { |definition| shared_component_definition_id(definition) }.reject(&:empty?).uniq
+      Array(rows).select do |row|
+        next true if !space_id.empty? && row[:source_space_id].to_s == space_id
+        id = row[:id].to_s
+        next true if !id.empty? && graph_ids.include?(id)
+        record = row[:record].is_a?(Hash) ? row[:record] : {}
+        next false if graph_object_ids.empty? || record.empty?
+        local_component_definitions_matching_record(record, model).any? { |definition| graph_object_ids[definition.object_id] }
+      rescue StandardError
+        false
+      end
+    rescue StandardError => e
+      log_exception('筛选空间关联协同组件更新失败', e)
+      []
+    end
+
+    def consistency_update_confirmation_text(space_rows, component_rows, blocked_components = [])
+      spaces = Array(space_rows)
+      components = Array(component_rows)
+      blocked = Array(blocked_components)
+      instance_count = components.sum { |row| row[:instance_count].to_i }
+      lines = []
+      unless spaces.empty?
+        lines << "空间模型：#{spaces.length} 个"
+        spaces.first(6).each do |row|
+          actor = row[:published_by].to_s.empty? ? '未知成员' : row[:published_by].to_s
+          time = shared_component_display_time(row[:published_at])
+          suffix = row[:published_at].to_s.empty? ? '' : " · #{actor} · #{time}"
+          lines << "• #{row[:label]}#{suffix}"
+        end
+        lines << "• 另有 #{spaces.length - 6} 个空间…" if spaces.length > 6
+      end
+      unless components.empty?
+        lines << "协同组件：#{components.length} 个 · 当前模型 #{instance_count} 个实例"
+        components.first(8).each do |row|
+          name = row[:name].to_s.empty? ? '协同组件' : row[:name].to_s
+          actor = row[:published_by].to_s.empty? ? '未知成员' : row[:published_by].to_s
+          record = {
+            'published_host' => row[:published_host].to_s,
+            'published_pid' => row[:published_pid].to_i,
+            'published_session_id' => row[:published_session_id].to_s
+          }
+          actor += '（本机另一 SU）' if shared_component_record_from_other_local_runtime?(record)
+          lines << "• #{name} — #{actor} · #{shared_component_display_time(row[:published_at])}"
+        end
+        lines << "• 另有 #{components.length - 8} 个组件…" if components.length > 8
+      end
+      text = "将执行一次一致性更新：\n\n#{lines.join("\n")}"
+      unless blocked.empty?
+        text += "\n\n另有 #{blocked.length} 个协同组件存在当前 SU 会话真实未发布修改，为避免覆盖，本次会保留并跳过。"
+      end
+      text + "\n\n确认后将先载入空间最新版，再统一刷新协同组件。是否继续？"
+    rescue StandardError
+      '将同时更新空间模型与协同组件，是否继续？'
+    end
+
+    def show_consistency_update_progress!(job, text, progress, level: 'info')
+      model = job[:model]
+      show_workspace_floating_notice(
+        text.to_s, level, progress: [[progress.to_f, 0.0].max, 100.0].min,
+        persistent: true, model: model
+      )
+      true
+    rescue StandardError
+      false
+    end
+
+    def start_consistency_update_job!(space_rows, component_rows, blocked_components, model = Sketchup.active_model, origin: 'combined')
+      raise '空间与协同组件一致性更新正在进行，请等待完成。' if @consistency_update_job
+      raise '已有发布或更新任务正在执行，请等待完成。' if publish_critical_section? || publish_post_quiet? || @updating || @single_space_update_job || @space_batch_update_job || @shared_component_batch_update_job
+      spaces = Array(space_rows).select { |row| row.is_a?(Hash) && !row[:id].to_s.empty? }.uniq { |row| row[:id].to_s }
+      components = Array(component_rows).select { |row| row.is_a?(Hash) && !row[:id].to_s.empty? }.uniq { |row| row[:id].to_s }
+      blocked = Array(blocked_components)
+      total = spaces.length + components.length
+      return false if total.zero?
+      token = SecureRandom.hex(8)
+      @consistency_update_job = {
+        token: token,
+        model: model,
+        origin: origin.to_s,
+        space_rows: spaces.dup,
+        component_rows: components.dup,
+        blocked_components: blocked,
+        space_total: spaces.length,
+        component_total: components.length,
+        total_steps: total,
+        completed_steps: 0,
+        spaces_updated: 0,
+        space_failures: [],
+        component_summary: nil,
+        started_at: monotonic_time
+      }
+      show_consistency_update_progress!(@consistency_update_job, "一致性更新 0/#{total} · 准备中", 0)
+      refresh_workspace_toolbar(model) rescue nil
+      schedule_consistency_update_step!(token, delay: 0.05)
+      true
+    rescue StandardError => e
+      log_exception('启动空间与组件一致性更新失败', e)
+      show_status("一致性更新失败：#{e.message}", 'error')
+      false
+    end
+
+    def schedule_consistency_update_step!(token, delay: 0.08)
+      runtime_start_timer(delay.to_f, false, label: 'consistency:update', key: "consistency:update:#{token}") do
+        process_consistency_update_step!(token)
+      end
+      true
+    rescue StandardError => e
+      log_exception('安排一致性更新步骤失败', e)
+      false
+    end
+
+    def process_consistency_update_step!(token)
+      job = @consistency_update_job
+      return false unless job.is_a?(Hash) && job[:token].to_s == token.to_s
+      model = job[:model]
+      return schedule_consistency_update_step!(token, delay: 0.35) unless model && model == Sketchup.active_model
+      return schedule_consistency_update_step!(token, delay: 0.30) if publish_critical_section? || publish_post_quiet? || @updating || @single_space_update_job || @space_batch_update_job || @shared_component_batch_update_job
+
+      space_row = Array(job[:space_rows]).shift
+      if space_row
+        label = space_row[:label].to_s.empty? ? '空间模型' : space_row[:label].to_s
+        progress = job[:total_steps].to_i.positive? ? job[:completed_steps].to_f * 100.0 / job[:total_steps].to_i : 0.0
+        show_consistency_update_progress!(job, "一致性更新 · 正在载入 #{label}", progress)
+        callback = proc do |ok|
+          current = @consistency_update_job
+          next unless current.is_a?(Hash) && current[:token].to_s == token.to_s
+          if ok
+            current[:spaces_updated] = current[:spaces_updated].to_i + 1
+          else
+            current[:space_failures] << { id: space_row[:id].to_s, name: label }
+          end
+          current[:completed_steps] = current[:completed_steps].to_i + 1
+          progress_now = current[:total_steps].to_i.positive? ? current[:completed_steps].to_f * 100.0 / current[:total_steps].to_i : 100.0
+          show_consistency_update_progress!(current, "一致性更新 #{current[:completed_steps]}/#{current[:total_steps]} · #{label}", progress_now, level: ok ? 'info' : 'warning')
+          schedule_consistency_update_step!(token, delay: 0.08)
+        end
+        begin
+          update_space_model(
+            space_row[:id].to_s,
+            notify: false,
+            completion_callback: callback,
+            consistency_token: token.to_s
+          )
+        rescue StandardError => e
+          log_exception("一致性更新空间失败：#{label}", e)
+          callback.call(false)
+        end
+        return true
+      end
+
+      components = Array(job[:component_rows])
+      if components.empty?
+        return finish_consistency_update_job!(job, model)
+      end
+      # 空间部分是本次一致性更新的基座。任何关联空间没有成功载入时，不继续刷新组件，
+      # 避免把模型推进到“组件已新、空间仍旧”的另一种半更新状态；用户修复空间问题后
+      # 再点一次即可重新生成完整计划。
+      unless Array(job[:space_failures]).empty?
+        job[:component_summary] = {
+          total: components.length,
+          succeeded: 0,
+          failures: [],
+          updated_instances: 0,
+          skipped_due_space_failure: true
+        }
+        job[:component_rows] = []
+        return finish_consistency_update_job!(job, model)
+      end
+      job[:component_rows] = []
+      total_steps = [job[:total_steps].to_i, 1].max
+      base = job[:completed_steps].to_f * 100.0 / total_steps
+      span = components.length.to_f * 100.0 / total_steps
+      started = start_shared_component_batch_update_job!(
+        components,
+        job[:blocked_components],
+        model,
+        notice_prefix: '一致性更新',
+        progress_base: base,
+        progress_span: span,
+        suppress_finish_notice: true,
+        completion_callback: proc do |summary|
+          current = @consistency_update_job
+          next unless current.is_a?(Hash) && current[:token].to_s == token.to_s
+          current[:component_summary] = summary
+          current[:completed_steps] = current[:completed_steps].to_i + components.length
+          finish_consistency_update_job!(current, model)
+        end
+      )
+      unless started
+        job[:component_summary] = { total: components.length, succeeded: 0, failures: components.map { |row| { id: row[:id], name: row[:name] } }, updated_instances: 0 }
+        job[:completed_steps] = job[:completed_steps].to_i + components.length
+        finish_consistency_update_job!(job, model)
+      end
+      true
+    rescue StandardError => e
+      log_exception('执行空间与组件一致性更新失败', e)
+      finish_consistency_update_job!(@consistency_update_job, Sketchup.active_model) if @consistency_update_job
+      false
+    end
+
+    def finish_consistency_update_job!(job, model = Sketchup.active_model)
+      return false unless job.is_a?(Hash)
+      spaces_updated = job[:spaces_updated].to_i
+      space_failures = Array(job[:space_failures])
+      component_summary = job[:component_summary].is_a?(Hash) ? job[:component_summary] : { total: 0, succeeded: 0, failures: [], updated_instances: 0 }
+      component_succeeded = component_summary[:succeeded].to_i
+      component_failures = Array(component_summary[:failures])
+      updated_instances = component_summary[:updated_instances].to_i
+      components_skipped_for_space_failure = component_summary[:skipped_due_space_failure] == true
+      blocked = Array(job[:blocked_components])
+      @consistency_update_job = nil
+      invalidate_shared_component_signature_cache!(nil, model)
+      @shared_component_discovery_cache&.delete(model.object_id)
+      refresh_dialog rescue nil
+      refresh_workspace_toolbar(model) rescue nil
+
+      failures = space_failures.length + component_failures.length
+      details = []
+      details << "#{spaces_updated} 个空间" if job[:space_total].to_i.positive?
+      if job[:component_total].to_i.positive?
+        if components_skipped_for_space_failure
+          details << "组件更新已暂停，先解决空间载入失败"
+        else
+          details << "#{component_succeeded} 个组件 / #{updated_instances} 个实例"
+        end
+      end
+      details << "#{blocked.length} 个本地修改组件已保留" unless blocked.empty?
+      if failures.zero?
+        show_workspace_floating_notice(
+          "一致性更新完成 · #{details.join(' · ')}",
+          blocked.empty? ? 'success' : 'warning', progress: 100, duration: blocked.empty? ? 3.5 : 5.0, model: model
+        )
+      else
+        show_workspace_floating_notice(
+          "一致性更新完成 · #{details.join(' · ')} · #{failures} 项失败",
+          'warning', progress: 100, duration: 5.0, model: model
+        )
+      end
+      schedule_restore_default_select_tool(model, delay: 0.05, reason: '空间与组件一致性更新完成') rescue nil
+      true
+    rescue StandardError => e
+      @consistency_update_job = nil
+      log_exception('完成空间与组件一致性更新失败', e)
+      false
+    end
+
+    def request_consistency_component_update!(model = Sketchup.active_model)
+      raise '空间与协同组件一致性更新正在进行，请等待完成。' if @consistency_update_job
+      raise '发布或其它更新正在进行，请稍后再更新。' if publish_critical_section? || publish_post_quiet? || @updating || @single_space_update_job || @space_batch_update_job || @shared_component_batch_update_job
+      state = ensure_space_models_ready!(model)
+      plan = shared_component_bulk_update_plan(model, state, force: true)
+      components = Array(plan[:rows])
+      blocked = Array(plan[:blocked])
+      if components.empty?
+        if blocked.empty?
+          show_status('空间与协同组件已经是最新版本', 'info')
+        else
+          show_status("#{blocked.length} 个组件有共享更新，但当前 SU 会话存在真实未发布修改；已保留本地内容", 'warning')
+        end
+        return false
+      end
+      active_id = shared_component_active_id(model)
+      if !active_id.empty? && components.any? { |row| row[:id].to_s == active_id }
+        raise '正在编辑的协同组件也有共享更新；请先退出该组件内部，再执行一致性更新。'
+      end
+      spaces = consistency_space_rows_for_component_updates(components, state, model)
+      return false unless native_confirm_yes?(consistency_update_confirmation_text(spaces, components, blocked))
+      start_consistency_update_job!(spaces, components, blocked, model, origin: 'top_component_button')
+    rescue StandardError => e
+      log_exception('启动顶部一致性更新失败', e)
+      show_status("更新失败：#{e.message}", 'error')
+      false
+    end
+
+    def request_space_update_with_shared_components!(space_id, model = Sketchup.active_model)
+      raise '空间与协同组件一致性更新正在进行，请等待完成。' if @consistency_update_job
+      state = ensure_space_models_ready!(model)
+      item = space_model_record(state, space_id.to_s)
+      raise '找不到该空间模型。' unless item
+      # 联动空间本身不拥有独立共享文件；保持原有来源空间载入逻辑，避免为一次联动恢复
+      # 扩大成全项目组件更新。
+      return update_space_model(space_id.to_s) if linked_space_record?(item)
+
+      plan = shared_component_bulk_update_plan(model, state, force: true)
+      components = shared_component_update_rows_for_space(item, Array(plan[:rows]), model)
+      blocked = shared_component_update_rows_for_space(item, Array(plan[:blocked]), model)
+      return update_space_model(space_id.to_s) if components.empty? && blocked.empty?
+
+      active_id = shared_component_active_id(model)
+      if !active_id.empty? && components.any? { |row| row[:id].to_s == active_id }
+        raise '正在编辑的协同组件也有共享更新；请先退出该组件内部，再更新空间。'
+      end
+      row = consistency_space_update_row(item, model)
+      spaces = row ? [row] : []
+      return false unless native_confirm_yes?(consistency_update_confirmation_text(spaces, components, blocked))
+      start_consistency_update_job!(spaces, components, blocked, model, origin: 'drawer_space_update')
+    rescue StandardError => e
+      log_exception('启动空间卡片一致性更新失败', e)
+      show_status("空间更新失败：#{e.message}", 'error')
+      false
+    end
+
+    def start_shared_component_batch_update_job!(rows, blocked, model = Sketchup.active_model, notice_prefix: '协同组件更新', progress_base: 0.0, progress_span: 100.0, suppress_finish_notice: false, completion_callback: nil)
+      raise '协同组件批量更新正在进行，请等待完成。' if @shared_component_batch_update_job
+      rows = Array(rows)
+      return false if rows.empty?
+      token = SecureRandom.hex(6)
+      @shared_component_batch_update_job = {
+        token: token,
+        model: model,
+        rows: rows.dup,
+        total: rows.length,
+        total_instances: rows.sum { |row| row[:instance_count].to_i },
+        completed: 0,
+        updated_instances: 0,
+        failures: [],
+        blocked: Array(blocked),
+        started_at: monotonic_time,
+        notice_prefix: notice_prefix.to_s.empty? ? '协同组件更新' : notice_prefix.to_s,
+        progress_base: progress_base.to_f,
+        progress_span: progress_span.to_f,
+        suppress_finish_notice: suppress_finish_notice == true,
+        completion_callback: completion_callback
+      }
+      initial_progress = [[progress_base.to_f, 0.0].max, 100.0].min
+      show_workspace_floating_notice(
+        "#{@shared_component_batch_update_job[:notice_prefix]} · 组件 0/#{rows.length} · 准备中",
+        'info', progress: initial_progress, persistent: true, model: model
+      )
+      refresh_workspace_toolbar(model) rescue nil
+      schedule_shared_component_batch_update_step!(token, delay: 0.05)
+      true
+    rescue StandardError => e
+      log_exception('启动协同组件批量更新任务失败', e)
+      false
+    end
+
+    def request_update_all_shared_components!(model = Sketchup.active_model)
+      raise '空间与协同组件一致性更新正在进行，请等待完成。' if @consistency_update_job
+      raise '协同组件批量更新正在进行，请等待完成。' if @shared_component_batch_update_job
+      raise '发布或其它更新正在进行，请稍后再更新组件。' if publish_critical_section? || @updating || @single_space_update_job || @space_batch_update_job
+      state = load_state(model)
+      plan = shared_component_bulk_update_plan(model, state, force: true)
+      rows = Array(plan[:rows])
+      blocked = Array(plan[:blocked])
+      if rows.empty?
+        if blocked.empty?
+          show_status('协同组件已经是最新版本', 'info')
+        else
+          show_status("#{blocked.length} 个组件有共享更新，但当前 SU 会话检测到未发布修改；请先发布包含它们的空间", 'warning')
+        end
+        return false
+      end
+      active_id = shared_component_active_id(model)
+      if !active_id.empty? && rows.any? { |row| row[:id].to_s == active_id }
+        raise '正在编辑的协同组件也有共享更新；请先退出该组件内部，再点击黄色更新按钮。'
+      end
+      return false unless native_confirm_yes?(shared_component_update_confirmation_text(rows, blocked))
+
+      start_shared_component_batch_update_job!(rows, blocked, model)
+    rescue StandardError => e
+      log_exception('启动协同组件批量更新失败', e)
+      show_status("更新组件失败：#{e.message}", 'error')
+      false
+    end
+
+    def schedule_shared_component_batch_update_step!(token, delay: 0.08)
+      runtime_start_timer(
+        delay.to_f, false, label: 'shared_component:update_all',
+        key: "shared_component:update_all:#{token}"
+      ) do
+        process_shared_component_batch_update_step!(token)
+      end
+      true
+    rescue StandardError => e
+      log_exception('安排协同组件批量更新失败', e)
+      false
+    end
+
+    def finish_shared_component_batch_update!(job, model = Sketchup.active_model)
+      return false unless job.is_a?(Hash)
+      total = job[:total].to_i
+      failures = Array(job[:failures])
+      succeeded = [total - failures.length, 0].max
+      instances = job[:updated_instances].to_i
+      callback = job[:completion_callback]
+      suppress_notice = job[:suppress_finish_notice] == true
+      summary = {
+        total: total,
+        succeeded: succeeded,
+        failures: failures,
+        updated_instances: instances,
+        blocked: Array(job[:blocked])
+      }
+      @shared_component_batch_update_job = nil
+      invalidate_shared_component_signature_cache!(nil, model)
+      @shared_component_discovery_cache&.delete(model.object_id)
+      refresh_dialog rescue nil
+      refresh_workspace_toolbar(model) rescue nil
+      unless suppress_notice
+        if failures.empty?
+          show_workspace_floating_notice(
+            "#{succeeded} 个协同组件更新完成 · #{instances} 个实例已刷新",
+            'success', progress: 100, duration: 3.2, model: model
+          )
+        else
+          names = failures.first(3).map { |row| row[:name].to_s }.reject(&:empty?).join('、')
+          suffix = names.empty? ? '' : " · #{names}"
+          show_workspace_floating_notice(
+            "协同组件更新完成 #{succeeded}/#{total} · #{failures.length} 个失败#{suffix}",
+            'warning', progress: 100, duration: 5.0, model: model
+          )
+        end
+        schedule_restore_default_select_tool(model, delay: 0.05, reason: '协同组件批量更新完成') rescue nil
+      end
+      if callback.respond_to?(:call)
+        runtime_start_timer(0.01, false, label: 'shared_component:update_complete') do
+          begin
+            callback.call(summary)
+          rescue StandardError => callback_error
+            log_exception('协同组件批量更新完成回调失败', callback_error)
+          end
+        end
+      end
+      true
+    rescue StandardError => e
+      @shared_component_batch_update_job = nil
+      log_exception('完成协同组件批量更新失败', e)
+      false
+    end
+
+    def process_shared_component_batch_update_step!(token)
+      job = @shared_component_batch_update_job
+      return false unless job.is_a?(Hash) && job[:token].to_s == token.to_s
+      model = job[:model]
+      unless model && model == Sketchup.active_model
+        return schedule_shared_component_batch_update_step!(token, delay: 0.35)
+      end
+      if publish_critical_section? || publish_post_quiet? || @updating || @single_space_update_job || @space_batch_update_job
+        return schedule_shared_component_batch_update_step!(token, delay: 0.30)
+      end
+      row = Array(job[:rows]).shift
+      return finish_shared_component_batch_update!(job, model) unless row
+
+      name = row[:name].to_s.empty? ? '协同组件' : row[:name].to_s
+      ok = false
+      begin
+        if row[:kind] == :adopt
+          record = row[:record].is_a?(Hash) ? row[:record] : {}
+          definitions = local_component_definitions_matching_record(record, model).select do |definition|
+            shared_component_definition_id(definition).empty?
+          end
+          definitions.each { |definition| adopt_shared_component_record_for_definition!(definition, record, model) }
+        end
+        ok = update_shared_component_by_id(row[:id].to_s, model, notify: false, refresh: false)
+      rescue StandardError => e
+        log_exception("批量更新协同组件失败：#{name}", e)
+        ok = false
+      end
+      if ok
+        job[:updated_instances] = job[:updated_instances].to_i + row[:instance_count].to_i
+      else
+        job[:failures] << { id: row[:id].to_s, name: name }
+      end
+      job[:completed] = job[:completed].to_i + 1
+      phase_progress = job[:total].to_i.positive? ? (job[:completed].to_f / job[:total].to_i) : 1.0
+      progress_base = job[:progress_base].to_f
+      progress_span = job[:progress_span].nil? ? 100.0 : job[:progress_span].to_f
+      progress = progress_base + phase_progress * progress_span
+      prefix = job[:notice_prefix].to_s.empty? ? '协同组件更新' : job[:notice_prefix].to_s
+      show_workspace_floating_notice(
+        "#{prefix} · 组件 #{job[:completed]}/#{job[:total]} · #{name}",
+        ok ? 'info' : 'warning', progress: progress, persistent: true, model: model
+      )
+      schedule_shared_component_batch_update_step!(token, delay: 0.08)
+      true
+    rescue StandardError => e
+      log_exception('执行协同组件批量更新失败', e)
+      if job.is_a?(Hash)
+        job[:failures] << { id: row.is_a?(Hash) ? row[:id].to_s : '', name: row.is_a?(Hash) ? row[:name].to_s : '未知组件' }
+        job[:completed] = job[:completed].to_i + 1
+        schedule_shared_component_batch_update_step!(token, delay: 0.10)
+      end
+      false
+    end
+
+    def update_shared_component_by_id(component_id, model = Sketchup.active_model, notify: true, refresh: true)
+      if @consistency_update_job && !@shared_component_batch_update_job
+        raise '空间与协同组件一致性更新正在进行，请等待完成。'
+      end
+      id = component_id.to_s
+      if shared_component_active_id(model) == id
+        raise '请先退出该协同组件的内部编辑层级，再获取共享最新版。'
+      end
+      state = load_state(model)
+      manifest = read_shared_components_manifest(state, model, force: true)
+      record = shared_component_manifest_record(manifest, id)
+      raise '共享清单中找不到该协同组件。' unless record
+      target = shared_component_manifest_asset_path(record, state, model)
+      raise '协同组件共享文件不存在。' unless File.file?(target)
+
+      # 同一个业务组件可能分散在多个独立空间 SKP 中。较早发布的空间文件可能还没有
+      # shared component id，但仍可由 GUID 或“名称 + 初始/最新内容签名”可靠识别。只要
+      # 当前模型里已经有一个绑定 Definition，旧逻辑就会把这些未绑定副本排除，造成只更新
+      # 一个空间。现在每次组件更新都先自动接入所有可可靠匹配的当前模型 Definition。
+      unbound = local_component_definitions_matching_record(record, model).select do |definition|
+        shared_component_definition_id(definition).empty?
+      end
+      divergent_unbound = unbound.reject { |definition| shared_component_unbound_shape_safe?(definition, record, model) }
+      unless divergent_unbound.empty?
+        raise "当前模型中有 #{divergent_unbound.length} 个同源组件已偏离可验证的共享初始/最新形态；为避免覆盖真实本地修改，已停止自动更新。"
+      end
+      unbound.each { |definition| adopt_shared_component_record_for_definition!(definition, record, model) }
+      definitions = shared_component_live_definitions(model, component_id: id, force: true)
+      raise '当前模型中没有该协同组件实例。' if definitions.empty?
+
+      # 空间发布可能已经把新版组件几何带到本机，但组件 revision 元数据仍是上一版。
+      # 这种情况只对齐版本信息，完全不重载几何，也绝不能要求接收方“先发布”。
+      if align_shared_component_metadata_to_remote!(definitions, record, model)
+        invalidate_shared_component_signature_cache!(nil, model)
+        refresh_dialog rescue nil if refresh
+        refresh_workspace_toolbar(model) rescue nil if refresh
+        show_status("#{record['name'].to_s.empty? ? '协同组件' : record['name']} 已对齐共享最新版", 'success') if notify
+        return true
+      end
+
+      if definitions.any? { |definition| shared_component_remote_update_dirty?(definition, record, model) }
+        raise '该协同组件在当前 SU 会话中确有未发布修改；为避免覆盖，请先发布包含它的空间后再更新。'
+      end
+      current_revisions = definitions.map { |definition| definition.get_attribute(SHARED_COMPONENT_DICT, 'revision', '').to_s }.uniq
+      if current_revisions.length == 1 && current_revisions.first == record['revision'].to_s
+        show_status("#{record['name']} 已是最新组件", 'info') if notify
+        return true
+      end
+
+      instances = definitions.flat_map { |definition| Array(definition.instances) }.select do |instance|
+        instance && instance.valid? && instance.is_a?(Sketchup::ComponentInstance)
+      end.uniq
+      raise '当前模型中没有可更新的协同组件实例。' if instances.empty?
+      canonical = definitions.max_by { |definition| definition.instances.length rescue 0 }
+      transforms = instances.each_with_object({}) do |instance, memo|
+        memo[instance.object_id] = instance.transformation.to_a.map(&:to_f)
+      rescue StandardError
+        next
+      end
+      old_definitions = definitions.reject { |definition| definition.equal?(canonical) }
+      name = record['name'].to_s.empty? ? shared_component_definition_name(canonical) : record['name'].to_s
+
+      model.start_operation("更新协同组件 #{name}", true)
+      with_shared_component_sync_guard do
+        begin
+          result = canonical.respond_to?(:reload) ? canonical.reload(target) : false
+          raise 'SketchUp 未能原位重载协同组件。' if result == false
+        rescue StandardError => reload_error
+          if newer_model_version_error?(reload_error)
+            loaded = load_definition_compat(model.definitions, target)
+            raise 'SketchUp 未能载入协同组件共享版。' unless loaded
+            canonical = loaded
+          else
+            loaded = load_definition_compat(model.definitions, target)
+            raise 'SketchUp 未能载入协同组件共享版。' unless loaded
+            canonical = loaded
+          end
+        end
+
+        instances.each do |instance|
+          next unless instance && instance.valid?
+          if instance.definition != canonical
+            matrix = transforms[instance.object_id]
+            instance.definition = canonical
+            restore_instance_exact_transform_matrix!(instance, matrix, '协同组件更新') if matrix && matrix.length == 16
+          elsif (matrix = transforms[instance.object_id]) && matrix.length == 16
+            restore_instance_exact_transform_matrix!(instance, matrix, '协同组件更新')
+          end
+        end
+        canonical.set_attribute(SHARED_COMPONENT_DICT, 'schema', SHARED_COMPONENTS_SCHEMA)
+        canonical.set_attribute(SHARED_COMPONENT_DICT, 'id', id)
+        canonical.set_attribute(SHARED_COMPONENT_DICT, 'name', name)
+        canonical.set_attribute(SHARED_COMPONENT_DICT, 'definition_guid', record['definition_guid'].to_s)
+        canonical.set_attribute(SHARED_COMPONENT_DICT, 'origin_content_signature', record['origin_content_signature'].to_s.empty? ? record['content_signature'].to_s : record['origin_content_signature'].to_s)
+        canonical.set_attribute(SHARED_COMPONENT_DICT, 'revision', record['revision'].to_s)
+        canonical.set_attribute(SHARED_COMPONENT_DICT, 'source_signature', record['signature'].to_s)
+        canonical.set_attribute(SHARED_COMPONENT_DICT, 'published_content_signature', record['content_signature'].to_s)
+        canonical.set_attribute(SHARED_COMPONENT_DICT, 'space_snapshot_content_signature', record['content_signature'].to_s)
+      end
+      model.commit_operation
+      old_definitions.each { |definition| remove_unused_definition!(definition, model) rescue nil }
+      @shared_component_dirty_ids ||= {}
+      (@shared_component_dirty_ids[model.object_id] ||= {}).delete(id)
+      invalidate_shared_component_signature_cache!(nil, model)
+      reset_shared_component_session_baseline!(canonical, model, signature: record['content_signature'].to_s) if canonical && canonical.valid?
+      mark_soft_measurement_dirty(model)
+      refresh_dialog rescue nil if refresh
+      refresh_workspace_toolbar(model) rescue nil if refresh
+      show_status("#{name} 已更新；本模型内 #{instances.length} 个实例同步刷新", 'success') if notify
+      true
+    rescue StandardError => e
+      model.abort_operation rescue nil
+      log_exception('更新协同组件失败', e)
+      show_status("更新协同组件失败：#{e.message}", 'error') if notify
+      false
+    end
+
+    def detach_selected_shared_component(model = Sketchup.active_model)
+      entity = selected_shared_component_instance(model, allow_unmanaged: false)
+      raise '请只选中一个协同组件实例。' unless entity
+      definition = entity.definition
+      name = shared_component_definition_name(definition)
+      answer = UI.messagebox(
+        "解除“#{name}”的协同组件身份？\n\n解除后，本模型中所有使用同一 SU 组件定义的实例仍会保持 SketchUp 原生联动，但不再接收/发布项目级组件更新。",
+        MB_YESNO
+      )
+      return false unless answer == IDYES
+      model.start_operation('解除 LinkHub 协同组件', true)
+      %w[schema id name definition_guid origin_content_signature revision source_signature published_content_signature space_snapshot_content_signature].each do |key|
+        definition.delete_attribute(SHARED_COMPONENT_DICT, key) rescue nil
+      end
+      model.commit_operation
+      invalidate_shared_component_signature_cache!(definition, model)
+      show_status("#{name} 已解除协同组件身份", 'success')
+      refresh_workspace_toolbar(model) rescue nil
+      true
+    rescue StandardError => e
+      model.abort_operation rescue nil
+      log_exception('解除协同组件失败', e)
+      show_status("解除协同组件失败：#{e.message}", 'error')
+      false
+    end
+
+    def shared_component_publish_plan_for_space_entity(entity, model = Sketchup.active_model)
+      dirty_shared_components_in_space(entity, model).filter_map do |row|
+        definition = row[:definition]
+        signature = definition && definition.valid? ? shared_component_content_signature(definition, model) : ''
+        next if signature.to_s.empty?
+        { id: row[:id].to_s, name: row[:name].to_s, content_signature: signature.to_s }
+      end
+    rescue StandardError => e
+      log_exception('生成空间附带协同组件提交计划失败', e)
+      []
+    end
+
+    def dirty_shared_components_in_space(entity, model = Sketchup.active_model)
+      return [] unless entity && entity.valid? && entity.respond_to?(:definition)
+      state = load_state(model)
+      manifest = read_shared_components_manifest(state, model, force: false)
+      collect_space_definition_graph(entity.definition).filter_map do |definition|
+        next unless shared_component_definition?(definition)
+        id = shared_component_definition_id(definition)
+        next if id.empty?
+        record = shared_component_manifest_record(manifest, id)
+        dirty = if record
+                  # 已存在共享版本时，只把“相对本机可信基线真正发生的本地编辑”带入
+                  # 空间发布。远端 revision 变新、或空间快照几何比旧 metadata 新，都不
+                  # 能让接收方反向发布别人的组件。
+                  shared_component_remote_update_dirty?(definition, record, model)
+                else
+                  # 第一次定义、共享端还没有组件资产时，保持原有 first-publish 语义。
+                  shared_component_dirty?(definition, model)
+                end
+        next unless dirty
+        { id: id, name: shared_component_definition_name(definition), definition: definition }
+      end.uniq { |row| row[:id] }
+    rescue StandardError => e
+      log_exception('检查空间内待同步协同组件失败', e)
+      []
+    end
+
+    # -------------------------
+    # LinkHub 根模型跨专业归类
+    # -------------------------
+
+    LINKHUB_CLASSIFICATION_LABELS = {
+      'architecture' => '建筑',
+      SPACE_COLLECTION_KEY => '硬装',
+      SOFT_SPACE_COLLECTION_KEY => '软装',
+      'landscape' => '景观'
+    }.freeze unless const_defined?(:LINKHUB_CLASSIFICATION_LABELS, false)
+
+    def linkhub_root_classification(entity)
+      return '' unless entity && entity.valid?
+      return '' unless entity.get_attribute(ENTITY_DICT, 'managed', false)
+      kind = entity.get_attribute(ENTITY_DICT, 'kind', '').to_s
+      discipline = entity.get_attribute(ENTITY_DICT, 'discipline', '').to_s
+      return 'architecture' if kind == 'architecture_model' && discipline == 'architecture'
+      return normalize_space_collection_key(discipline) if kind == 'space_model' && SPACE_COLLECTION_KEYS.include?(discipline)
+      return 'landscape' if %w[model skp].include?(kind) && discipline == 'landscape'
+      ''
+    rescue StandardError
+      ''
+    end
+

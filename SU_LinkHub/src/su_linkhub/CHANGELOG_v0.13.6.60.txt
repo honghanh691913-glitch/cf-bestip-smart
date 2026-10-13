@@ -1,0 +1,8 @@
+SU LinkHub v0.13.6.60 — 真模型切换性能 / 内存平衡
+
+1. 选中空间切真前的规模检查改为纯内存估算，不再逐家具 auto_relocate、NAS stat 或递归找文件。
+2. 已经在本 SketchUp 会话载入过的真模型，按稳定 model_id 直接复用 resident Definition；再次切真不再访问 NAS。
+3. 同一轮切换按 model_id 复用已载入 Definition，并记录单款首次载入耗时，后续可从日志直接找到最慢模型。
+4. 真模型热缓存从 3 个空间 / 72 顶层 Definition 收紧为 2 个空间 / 48 Definition；超过后仅在空闲帧逐个清理无实例旧高模。
+5. 仍不采用“切回代理立即 purge”的高风险做法，避免 SketchUp 原生 allocator/Undo 导致内存阶梯增长与下一次重复重载。
+6. 继承 v0.13.6.59 发布原生闪退修复及 v0.13.6.54+ Stable-ID 保护。

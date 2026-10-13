@@ -1,0 +1,22 @@
+SU LinkHub v0.13.6.99
+
+本版针对 v0.13.6.98 实测日志中“ESC 已经真正从 active_path 1->0，却被 LinkHub 自己重新拉回空间，必须连续狂按 ESC 才能退出”的根因修复。
+
+1. 新增“世界根退出意图锁（exit latch）”
+   - 一旦当前 LinkHub 空间的 active_path 从非空真正退到 nil，即认定用户明确要离开空间。
+   - 在退出事务结束前，若 active_path 回流到同一空间，不再执行“临界状态自愈/继续 editing”，而是立即强制压回 nil。
+   - 只有用户明确重新点击/双击“修改/继续”时，才清除退出意图并允许再次进入。
+
+2. 修复 v0.13.6.98 的反向自愈循环
+   - 旧日志表现为：1->0 -> 连续3帧nil -> “已修复 locked+inside” -> 再次1->0，循环多次。
+   - 新版退出稳定确认期间若发生同空间回流，会继续完成退出，不再把用户拉回编辑上下文。
+   - 退出收尾中的代理替换/Definition 操作结束后，在锁空间根之前再次确认 active_path=nil。
+
+3. 修复空间编辑 Definition 隔离的 Ruby 3 关键字参数错误
+   - space_edit_shared_spine_nodes(space_entity, limit) 改为 limit: limit。
+   - 该异常会导致空间编辑沙箱隔离实际没有完整执行，已修正。
+
+4. 修复历史软装空壳压平日志访问已删除 ComponentDefinition
+   - 删除旧 Definition 前缓存名称，避免 reference to deleted ComponentDefinition 异常。
+
+5. 保留 v0.13.6.98 之前的：活动空间真模/其它空间代理、黄色待提交高亮、六面代理队列与重复生成修复、PACKAGE/PAYLOAD 空壳清理、锁冲突防护。

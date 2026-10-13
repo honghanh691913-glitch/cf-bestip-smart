@@ -1,0 +1,674 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>SU LinkHub</title>
+  <style>
+    :root {
+      --bg:#e9eef6; --card:rgba(255,255,255,.62); --line:rgba(38,49,65,.10); --line-strong:rgba(38,49,65,.16);
+      --text:#202733; --muted:#6f7887; --primary:#3475ee; --primary-soft:#edf4ff;
+      --ok:#167254; --ok-bg:rgba(46,181,125,.12); --warn:#996300; --warn-bg:rgba(247,182,50,.14);
+      --bad:#a44035; --bad-bg:rgba(234,91,75,.12); --info:#2865c2; --info-bg:rgba(69,131,238,.12);
+      --edit:#7048b8; --edit-bg:rgba(132,91,205,.12); --muted-bg:rgba(105,119,140,.09);
+      --glass-edge:rgba(255,255,255,.78); --glass-highlight:rgba(255,255,255,.88);
+      --radius:22px; --control-radius:999px; --control-height:32px;
+    }
+    * { box-sizing:border-box; }
+    body {
+      min-height:100vh; margin:0; color:var(--text);
+      font:13px/1.42 "Microsoft YaHei","Segoe UI",sans-serif;
+      background:
+        radial-gradient(circle at 12% -6%,rgba(78,137,255,.20),transparent 34%),
+        radial-gradient(circle at 88% 12%,rgba(164,124,244,.12),transparent 29%),
+        radial-gradient(circle at 58% 72%,rgba(86,193,169,.09),transparent 32%),
+        linear-gradient(180deg,#f6f8fc 0%,var(--bg) 100%);
+      background-attachment:fixed;
+    }
+    button,input,select { font:inherit; }
+    button { cursor:pointer; transition:border-color .18s ease,background .18s ease,color .18s ease,box-shadow .18s ease,transform .1s ease; }
+    button:not(:disabled):active { transform:translateY(1px) scale(.985); }
+    button:focus-visible,select:focus-visible,input:focus-visible { outline:0; box-shadow:0 0 0 3px rgba(52,117,238,.14); }
+    button:disabled { opacity:.42; cursor:not-allowed; }
+    .app { padding:9px; }
+    .panel {
+      background:linear-gradient(145deg,rgba(255,255,255,.76),rgba(247,250,255,.48));
+      border:1px solid var(--glass-edge); border-radius:var(--radius);
+      -webkit-backdrop-filter:blur(22px) saturate(155%); backdrop-filter:blur(22px) saturate(155%);
+      box-shadow:0 9px 28px rgba(34,50,75,.09),inset 0 1px 0 var(--glass-highlight),inset 0 -1px 0 rgba(255,255,255,.28);
+    }
+    .header { padding:11px; }
+    .brand { display:flex; align-items:center; justify-content:space-between; gap:9px; }
+    .brand-main { display:flex; align-items:center; gap:8px; min-width:0; }
+    .brand-icon { width:29px; height:29px; flex:0 0 29px; display:block; }
+    .brand h1 { margin:0; font-size:17px; letter-spacing:-.2px; }
+    .version { color:var(--primary); font-weight:750; background:rgba(80,139,246,.11); padding:3px 9px; border:1px solid rgba(255,255,255,.72); border-radius:999px; font-size:10px; white-space:nowrap; box-shadow:inset 0 1px 0 rgba(255,255,255,.75); }
+    .collab-line { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:5px; margin-top:8px; }
+    .collab-line button,.toolbar button,.card button,.modal button,.icon-tool {
+      min-height:var(--control-height); border:1px solid var(--glass-edge); border-radius:var(--control-radius); padding:6px 11px;
+      background:linear-gradient(145deg,rgba(255,255,255,.67),rgba(255,255,255,.34)); color:var(--text);
+      -webkit-backdrop-filter:blur(13px) saturate(165%); backdrop-filter:blur(13px) saturate(165%);
+      box-shadow:0 3px 11px rgba(49,65,90,.065),inset 0 1px 0 rgba(255,255,255,.9),inset 0 -1px 0 rgba(255,255,255,.24);
+    }
+    .collab-line button:hover,.toolbar button:hover,.card button:hover,.modal button:hover,.compact-icon:hover { border-color:rgba(255,255,255,.96); background:rgba(255,255,255,.73); box-shadow:0 5px 15px rgba(49,65,90,.09),inset 0 1px 0 #fff; }
+    .collab-path {
+      height:var(--control-height); display:flex; align-items:center; min-width:0; padding:0 9px;
+      border:1px solid rgba(255,255,255,.72); border-radius:var(--control-radius); background:rgba(255,255,255,.38);
+      color:#5e6878; font-size:10.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer;
+      -webkit-backdrop-filter:blur(12px) saturate(145%); backdrop-filter:blur(12px) saturate(145%);
+      box-shadow:inset 0 1px 0 rgba(255,255,255,.72);
+    }
+    .role-line { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:6px; color:var(--muted); }
+    .role-line strong { flex:0 0 auto; color:#3b4452; font-size:11px; }
+    .role-controls { display:flex; align-items:center; justify-content:flex-end; gap:5px; flex:1; min-width:0; }
+    .role-line select {
+      flex:1; min-width:0; height:var(--control-height); border:1px solid rgba(255,255,255,.76); border-radius:var(--control-radius);
+      padding:0 12px; background:rgba(255,255,255,.48); color:var(--text); outline:none;
+      -webkit-backdrop-filter:blur(12px) saturate(145%); backdrop-filter:blur(12px) saturate(145%);
+      box-shadow:inset 0 1px 0 rgba(255,255,255,.82);
+    }
+    .compact-icon {
+      flex:0 0 var(--control-height); width:var(--control-height); min-width:var(--control-height); height:var(--control-height); padding:0;
+      display:grid; place-items:center; border:1px solid var(--glass-edge); border-radius:50%; background:rgba(255,255,255,.44); color:#697386;
+      -webkit-backdrop-filter:blur(13px) saturate(160%); backdrop-filter:blur(13px) saturate(160%);
+      box-shadow:0 3px 10px rgba(49,65,90,.06),inset 0 1px 0 rgba(255,255,255,.9);
+    }
+    .compact-icon svg { width:16px; height:16px; display:block; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+    .backup-folder.active,.viewport-toggle.active { border-color:rgba(255,255,255,.86); background:rgba(63,127,244,.15); color:var(--primary); }
+    .toolbar { display:grid; grid-template-columns:1fr 1fr; gap:7px; margin:8px 0 7px; }
+    .toolbar button { min-height:35px; }
+    .primary {
+      background:linear-gradient(145deg,rgba(66,135,255,.92),rgba(42,96,220,.80))!important; border-color:rgba(255,255,255,.44)!important; color:#fff!important; font-weight:750;
+      -webkit-backdrop-filter:blur(14px) saturate(180%); backdrop-filter:blur(14px) saturate(180%);
+      box-shadow:0 6px 17px rgba(47,111,237,.22),inset 0 1px 0 rgba(255,255,255,.42),inset 0 -1px 0 rgba(28,74,178,.18)!important;
+    }
+    .primary:hover { background:linear-gradient(145deg,rgba(76,144,255,.96),rgba(48,104,229,.86))!important; }
+    .status-overview { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin-bottom:8px; }
+    .overview { min-height:34px; display:flex; align-items:center; justify-content:center; gap:5px; padding:5px 4px; border:1px solid rgba(255,255,255,.72); border-radius:999px; background:rgba(255,255,255,.42); font-size:10.5px; -webkit-backdrop-filter:blur(12px) saturate(150%); backdrop-filter:blur(12px) saturate(150%); box-shadow:inset 0 1px 0 rgba(255,255,255,.78); }
+    .overview strong { font-size:13px; }
+    .overview.current { color:var(--ok); background:var(--ok-bg); }
+    .overview.pending { color:var(--warn); background:var(--warn-bg); }
+    .overview.error { color:var(--bad); background:var(--bad-bg); }
+    .overview.editing { color:var(--edit); background:var(--edit-bg); }
+    .dot { width:7px; height:7px; border-radius:50%; background:currentColor; flex:0 0 7px; }
+    .native-guide { display:flex; gap:8px; align-items:flex-start; margin-bottom:8px; padding:8px 10px; border:1px solid rgba(255,255,255,.72); border-radius:16px; background:rgba(247,249,253,.48); color:#485c78; -webkit-backdrop-filter:blur(12px); backdrop-filter:blur(12px); }
+    .native-guide b { color:#274f91; }
+    .cards { display:grid; gap:8px; }
+    .card { --accent:#a4adba; padding:9px; box-shadow:0 9px 27px rgba(32,49,75,.075),inset 2px 0 0 var(--accent),inset 0 1px 0 rgba(255,255,255,.92),inset 0 -1px 0 rgba(255,255,255,.25); }
+    .card.minimized { padding:8px 10px; cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .card.minimized .mini-title { font-weight:800; color:#475467; }
+    .card.minimized .mini-enable { border:0; padding:5px 8px; border-radius:999px; background:#eef1f5; color:#606b7b; font-size:11px; }
+    .card.status-current { --accent:var(--ok); }
+    .card.status-pending,.card.status-waiting { --accent:#d69716; }
+    .card.status-error { --accent:var(--bad); }
+    .card.status-syncing { --accent:var(--info); }
+    .card.status-editing,.card.status-locked { --accent:var(--edit); }
+    .card-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .title-wrap { display:flex; align-items:center; gap:8px; min-width:0; }
+    .title-wrap > div:last-child { min-width:0; }
+    .code { width:30px; height:30px; flex:0 0 30px; display:grid; place-items:center; border:1px solid rgba(255,255,255,.72); border-radius:50%; background:rgba(73,132,242,.12); color:var(--primary); font-weight:800; font-size:11px; box-shadow:inset 0 1px 0 rgba(255,255,255,.75); }
+    .discipline-architecture .code { background:rgba(73,132,242,.13); color:#2f6fed; }
+    .discipline-hard_finish .code,.discipline-space_collection .code { background:rgba(244,157,45,.13); color:#a65700; }
+    .discipline-soft_finish .code { background:rgba(139,91,218,.13); color:#6941b8; }
+    .discipline-landscape .code { background:rgba(46,181,125,.12); color:#167453; }
+    h2 { margin:0; font-size:13.5px; letter-spacing:-.1px; }
+    .card-meta,.space-summary { max-width:210px; margin-top:1px; color:var(--muted); font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .status-wrap { display:flex; align-items:center; gap:4px; flex:0 0 auto; }
+    .enable-toggle,.refresh-mini { min-height:28px!important; height:28px; padding:0 9px!important; border:1px solid rgba(255,255,255,.72)!important; border-radius:999px!important; font-size:10px!important; }
+    .enable-toggle { background:rgba(108,122,143,.09)!important; color:#536071!important; }
+    .enable-toggle.on { background:rgba(46,181,125,.12)!important; color:var(--ok)!important; }
+    .refresh-mini { background:rgba(69,131,238,.11)!important; color:var(--info)!important; font-weight:700; }
+    .status { height:28px; display:flex; align-items:center; gap:5px; max-width:150px; padding:0 9px; border:1px solid rgba(255,255,255,.68); border-radius:999px; font-size:10px; white-space:nowrap; background:var(--muted-bg); color:#5d6674; box-shadow:inset 0 1px 0 rgba(255,255,255,.7); }
+    .status.current { background:var(--ok-bg); color:var(--ok); }
+    .status.pending,.status.waiting { background:var(--warn-bg); color:var(--warn); }
+    .status.error { background:var(--bad-bg); color:var(--bad); }
+    .status.syncing { background:var(--info-bg); color:var(--info); }
+    .status.editing,.status.locked { background:var(--edit-bg); color:var(--edit); }
+    .status-detail { margin-top:5px; color:#697386; font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .quick-actions { display:flex; align-items:center; gap:5px; margin-top:6px; }
+    .quick-actions > button { flex:1 1 auto; }
+    .quick-actions > button { height:34px; min-height:34px; border-radius:999px; }
+    .quick-actions > [data-action="update-architecture-previous"] { border-color:rgba(255,255,255,.8); background:rgba(69,131,238,.13); color:var(--primary); font-weight:700; }
+    .quick-actions > .settings-gear { flex:0 0 34px; width:34px; min-width:34px; height:34px; padding:0; display:grid; place-items:center; border-radius:50%; color:#667085; }
+    .quick-actions > .settings-gear:hover { border-color:rgba(255,255,255,.94); background:rgba(255,255,255,.72); color:#344054; }
+    .settings-gear svg { width:16px; height:16px; display:block; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+    .card-head .discipline-eye { flex:0 0 28px; width:28px; min-width:28px!important; height:28px; min-height:28px; border-radius:50%; }
+    .quick-actions .off { color:var(--muted); }
+    .edit-banner { margin-top:7px; padding:7px 10px; border:1px solid rgba(255,255,255,.66); border-radius:16px; display:grid; gap:6px; -webkit-backdrop-filter:blur(12px) saturate(145%); backdrop-filter:blur(12px) saturate(145%); box-shadow:inset 0 1px 0 rgba(255,255,255,.68); }
+    .edit-banner.editing { background:var(--edit-bg); color:var(--edit); }
+    .edit-banner.pending { background:var(--warn-bg); color:var(--warn); }
+    .edit-banner.blocked { background:var(--bad-bg); color:var(--bad); }
+    .edit-title { font-weight:700; }
+    .edit-copy { font-size:11px; }
+    .space-card { --accent:#c56a00; }
+    .space-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .space-head-actions { display:flex; align-items:center; gap:4px; }
+    .space-add,.space-schedule { min-height:30px!important; height:30px; padding:0 8px!important; white-space:nowrap; font-weight:700; }
+    .space-add { background:rgba(245,166,55,.13)!important; border-color:rgba(255,255,255,.78)!important; color:#935900!important; }
+    .space-schedule { background:rgba(132,91,205,.12)!important; border-color:rgba(255,255,255,.78)!important; color:var(--edit)!important; }
+    .space-card-eye,.space-eye,.discipline-eye { width:30px; min-width:30px!important; height:30px; min-height:30px; padding:0!important; display:grid; place-items:center; border-radius:50%!important; color:#667085; }
+    .space-card-eye.active,.space-eye.active,.discipline-eye.active { border-color:rgba(255,255,255,.84)!important; background:rgba(69,131,238,.13)!important; color:var(--primary)!important; }
+    .eye-icon { width:17px; height:17px; display:block; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+    .space-list { display:flex; flex-direction:column; gap:4px; margin-top:7px; padding:0 0 1px; isolation:isolate; }
+    .space-empty { padding:16px 10px; border:1px dashed rgba(83,98,120,.2); border-radius:16px; color:var(--muted); text-align:center; font-size:11px; background:rgba(255,255,255,.28); }
+    .space-row { position:relative; z-index:1; display:grid; grid-template-columns:minmax(0,1fr); min-height:32px; padding:4px 7px 4px 9px; overflow:hidden; border:1px solid rgba(255,255,255,.72); border-left:2px solid #aab3c0; border-radius:16px; background:rgba(255,255,255,.38); box-shadow:0 3px 10px rgba(41,57,82,.045),inset 0 1px 0 rgba(255,255,255,.72); transition:min-height .2s cubic-bezier(.2,.8,.2,1),margin-bottom .2s cubic-bezier(.2,.8,.2,1),transform .16s ease,box-shadow .18s ease,background .16s ease; }
+    /* 展开时保持卡片上边缘不动，只向下展开，避免鼠标被卡片自身“甩出”后反复收放。 */
+    .space-row:hover,.space-row.hover-open,.space-row:focus-within { z-index:30; min-height:62px; margin-bottom:3px; transform:translateY(-1px); box-shadow:0 8px 18px rgba(31,45,66,.11); outline:none; }
+    .space-row.current { border-left-color:var(--ok); background:rgba(247,255,251,.40); }
+    .space-row.editing { border-color:rgba(255,255,255,.74); border-left-color:var(--edit); background:linear-gradient(90deg,rgba(112,72,184,.10),rgba(255,255,255,.38) 34%); }
+    .space-row.error { border-color:rgba(255,255,255,.74); border-left-color:var(--bad); background:linear-gradient(90deg,rgba(164,64,53,.09),rgba(255,255,255,.38) 34%); }
+    .space-row.pending { border-color:rgba(255,255,255,.74); border-left-color:#d69716; background:linear-gradient(90deg,rgba(214,151,22,.10),rgba(255,255,255,.38) 34%); }
+    .space-row:hover.current,.space-row.hover-open.current,.space-row:focus-within.current { background:rgba(246,255,251,.72); }
+    .space-row:hover.editing,.space-row.hover-open.editing,.space-row:focus-within.editing { background:rgba(246,241,255,.74); }
+    .space-row:hover.pending,.space-row.hover-open.pending,.space-row:focus-within.pending { background:rgba(255,249,232,.76); }
+    .space-row:hover.error,.space-row.hover-open.error,.space-row:focus-within.error { background:rgba(255,244,242,.76); }
+    .space-main { min-width:0; display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:7px; min-height:21px; }
+    .space-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:750; line-height:1.2; }
+    .space-name-wrap { min-width:0; display:flex; align-items:center; gap:2px; overflow:hidden; }
+    .space-name-wrap .space-name { flex:0 1 auto; }
+    .space-rename { flex:0 0 20px!important; width:20px!important; min-width:20px!important; height:20px!important; padding:2px!important; border:0!important; border-radius:50%!important; background:transparent!important; color:#8a93a2!important; opacity:.58; box-shadow:none!important; }
+    .space-rename:hover,.space-rename:focus-visible { color:#4d5767!important; opacity:1; background:rgba(100,116,139,.09)!important; outline:none; }
+    .space-rename:disabled { opacity:.22!important; background:transparent!important; }
+    .pencil-icon { width:13px; height:13px; display:block; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+    .space-state { margin:0; display:flex; align-items:center; justify-content:flex-end; gap:5px; min-width:0; color:var(--muted); font-size:10px; }
+    .space-status-pill { display:inline-flex; align-items:center; gap:4px; max-width:130px; padding:1px 6px; border-radius:999px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; background:var(--muted-bg); color:#5d6674; }
+    .space-status-pill.current { background:var(--ok-bg); color:var(--ok); }
+    .space-status-pill.pending { background:var(--warn-bg); color:var(--warn); }
+    .space-status-pill.error { background:var(--bad-bg); color:var(--bad); }
+    .space-status-pill.editing { background:rgba(132,91,205,.14); color:var(--edit); }
+    .space-status-pill .dot { width:6px; height:6px; flex-basis:6px; }
+    .space-size { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .space-actions { display:flex; align-items:center; justify-content:flex-end; gap:4px; min-height:0; max-height:0; margin-top:0; overflow:hidden; opacity:0; transform:translateY(-3px); pointer-events:none; transition:max-height .17s ease,margin-top .17s ease,opacity .13s ease,transform .17s ease; }
+    .space-row:hover .space-actions,.space-row.hover-open .space-actions,.space-row:focus-within .space-actions { max-height:29px; margin-top:4px; opacity:1; transform:translateY(0); pointer-events:auto; }
+    .space-row button { min-height:27px; height:27px; padding:3px 9px; min-width:38px; border-radius:999px; -webkit-backdrop-filter:none; backdrop-filter:none; }
+    .space-row .space-publish { background:rgba(69,131,238,.13); border-color:rgba(255,255,255,.76); color:var(--primary); font-weight:700; }
+    .space-row .space-delete { min-width:27px; width:27px; padding:4px; border-radius:50%; color:var(--bad); }
+    @media (max-width:510px) { .space-main { grid-template-columns:minmax(0,1fr) auto; gap:5px; } .space-state { gap:3px; } .space-size { display:none; } .space-row:hover,.space-row.hover-open,.space-row:focus-within { min-height:61px; transform:none; } }
+    .taskbar { display:none; position:fixed; left:9px; right:9px; bottom:9px; z-index:25; padding:10px 12px; border-radius:18px; background:rgba(31,41,55,.82); color:#fff; -webkit-backdrop-filter:blur(18px) saturate(145%); backdrop-filter:blur(18px) saturate(145%); box-shadow:0 12px 34px rgba(0,0,0,.22),inset 0 1px 0 rgba(255,255,255,.18); }
+    .taskbar.show { display:block; }
+    .task-label { font-size:11px; margin-bottom:7px; }
+    .progress { height:5px; border-radius:999px; background:rgba(255,255,255,.18); overflow:hidden; }
+    .progress::after { content:""; display:block; width:35%; height:100%; border-radius:999px; background:#6ea0ff; animation:move 1.1s infinite ease-in-out; }
+    @keyframes move { from { transform:translateX(-110%); } to { transform:translateX(315%); } }
+    .toast { position:fixed; left:9px; right:9px; bottom:9px; z-index:30; padding:11px 14px; border:1px solid rgba(255,255,255,.18); border-radius:18px; color:#fff; background:rgba(31,41,55,.84); -webkit-backdrop-filter:blur(18px) saturate(150%); backdrop-filter:blur(18px) saturate(150%); box-shadow:0 10px 30px rgba(0,0,0,.18),inset 0 1px 0 rgba(255,255,255,.16); transform:translateY(140%); opacity:0; transition:.2s ease; pointer-events:none; }
+    .toast.show { transform:translateY(0); opacity:1; }
+    .toast.success { background:rgba(18,107,73,.86); }
+    .toast.error { background:rgba(159,47,37,.87); }
+    .modal-backdrop { display:none; position:fixed; inset:0; z-index:40; background:rgba(28,39,57,.28); -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px); align-items:center; justify-content:center; padding:14px; }
+    .modal-backdrop.show { display:flex; }
+    .modal { width:min(520px,100%); max-height:90vh; display:flex; flex-direction:column; border:1px solid rgba(255,255,255,.78); border-radius:24px; background:rgba(250,252,255,.82); -webkit-backdrop-filter:blur(26px) saturate(155%); backdrop-filter:blur(26px) saturate(155%); overflow:hidden; box-shadow:0 24px 70px rgba(20,34,55,.23),inset 0 1px 0 rgba(255,255,255,.9); }
+    .modal-head,.modal-foot { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:12px 14px; border-bottom:1px solid var(--line); }
+    .modal-head button { width:32px; min-width:32px; padding:0; border-radius:50%; }
+    .modal-foot { border-top:1px solid var(--line); border-bottom:0; }
+    .modal-head h3 { margin:0; font-size:15px; }
+    .modal-body { padding:13px 14px; overflow:auto; }
+    .setting { border:1px solid rgba(255,255,255,.72); border-radius:18px; padding:10px; margin-bottom:10px; background:rgba(255,255,255,.36); box-shadow:inset 0 1px 0 rgba(255,255,255,.7); }
+    .setting strong { display:block; margin-bottom:6px; }
+    .setting-line { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:7px 0; }
+    .setting-line select,.tag-search { border:1px solid rgba(255,255,255,.76); border-radius:999px; padding:7px 10px; background:rgba(255,255,255,.52); min-width:145px; }
+    .help { color:var(--muted); font-size:11px; }
+    .tag-toolbar { display:flex; gap:6px; margin:8px 0; }
+    .tag-toolbar button { flex:1; }
+    .tag-list { border:1px solid rgba(255,255,255,.72); border-radius:16px; max-height:220px; overflow:auto; padding:6px; background:rgba(255,255,255,.32); }
+    .tag-item { display:flex; align-items:center; gap:7px; padding:6px 5px; border-radius:6px; }
+    .tag-item:hover { background:#f5f7fb; }
+    .tag-empty { padding:15px 8px; color:var(--muted); text-align:center; font-size:11px; }
+    .backup-modal { width:min(460px,100%); }
+    .backup-form { display:grid; gap:12px; }
+    .backup-field { display:grid; gap:6px; }
+    .backup-field > label { font-weight:750; color:#344054; }
+    .backup-path-box { min-height:39px; padding:9px 11px; border:1px solid rgba(255,255,255,.74); border-radius:16px; background:rgba(255,255,255,.42); color:#475467; font-size:11px; line-height:1.5; word-break:break-all; user-select:text; }
+    .backup-path-box.empty { color:var(--muted); font-style:italic; }
+    .backup-path-actions { display:flex; justify-content:flex-end; gap:7px; }
+    .backup-path-actions .backup-now { border-color:rgba(255,255,255,.76); background:rgba(69,131,238,.12); color:var(--primary); font-weight:700; }
+    .interval-row { display:flex; align-items:center; gap:7px; }
+    .interval-row input { width:112px; min-width:0; border:1px solid rgba(255,255,255,.76); border-radius:999px; padding:7px 11px; background:rgba(255,255,255,.52); outline:none; }
+    .interval-row input:focus { border-color:#8fb0f8; box-shadow:0 0 0 3px rgba(47,111,237,.1); }
+    .interval-unit { color:var(--muted); font-size:11px; }
+    .backup-summary { padding:8px 10px; border:1px solid rgba(255,255,255,.68); border-radius:16px; background:rgba(69,131,238,.11); color:#365f9f; font-size:11px; }
+    .footer { color:var(--muted); font-size:10px; padding:8px 3px 2px; }
+    .onboarding-panel{display:none;padding:18px;border:1px solid rgba(255,255,255,.76);border-radius:24px;background:linear-gradient(145deg,rgba(255,255,255,.72),rgba(239,246,255,.50));box-shadow:0 14px 34px rgba(35,55,91,.10),inset 0 1px 0 rgba(255,255,255,.9);text-align:center;-webkit-backdrop-filter:blur(18px) saturate(145%);backdrop-filter:blur(18px) saturate(145%)}
+    .onboarding-panel h2{margin:2px 0 7px;font-size:16px}.onboarding-panel p{margin:0 auto 14px;max-width:390px;color:var(--muted);font-size:12px;line-height:1.6}.onboarding-error{color:#b74343!important}
+    .onboarding-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.onboarding-actions.roles{grid-template-columns:repeat(3,minmax(0,1fr))}.onboarding-actions button{min-height:42px;border-radius:999px;font-weight:750}.onboarding-actions .change-project{grid-column:1/-1;justify-self:center;min-height:32px;padding:5px 18px;background:rgba(119,132,151,.10);color:var(--muted)}
+    .representation-toggle { display:inline-flex; align-items:center; height:30px; padding:2px; border:1px solid rgba(255,255,255,.74); border-radius:999px; background:rgba(119,132,151,.10); gap:1px; -webkit-backdrop-filter:blur(12px) saturate(150%); backdrop-filter:blur(12px) saturate(150%); box-shadow:inset 0 1px 0 rgba(255,255,255,.72); }
+    .representation-toggle button { width:27px; height:24px; min-height:24px; padding:0; border:0; border-radius:999px; background:transparent; color:#7a8494; font-weight:850; font-size:11px; box-shadow:none; }
+    .representation-toggle button.active { background:linear-gradient(145deg,rgba(132,91,205,.91),rgba(101,63,171,.78)); color:#fff; box-shadow:0 3px 8px rgba(112,72,184,.23),inset 0 1px 0 rgba(255,255,255,.35); }
+    .representation-toggle button:disabled { opacity:.45; }
+</style>
+</head>
+<body>
+  <main class="app">
+    <section class="header panel">
+      <div class="brand"><div class="brand-main"><img class="brand-icon" src="icons/linkhub_64.png" alt="SU LinkHub"><h1>SU LinkHub</h1></div><span class="version" id="pluginVersion" title="点击重新载入插件运行时，常规迭代无需重启 SketchUp">v0.9.87 · 点击重载</span></div>
+      <div class="collab-line"><div class="collab-path" id="collabPath" title="显示当前协同项目位置；点击可连接已有项目">协同位置：未设置</div><button class="primary" id="createProject" title="选择协同.json的保存位置，自动创建协同目录；无需先保存当前SKP">新建</button><button id="connectProject" title="选择已有协同.json或已有项目文件夹">连接</button></div>
+      <div class="role-line" id="roleLine">
+        <strong>当前工作区</strong>
+        <div class="role-controls">
+          <select id="hostDiscipline" title="设置当前文件所属工作区，用于阻止自身回流"><option value="architecture">建筑</option><option value="hard_finish">硬装</option><option value="soft_finish">软装</option><option value="landscape">景观</option></select>
+          <button id="backupFolder" class="compact-icon backup-folder" aria-label="副本文件夹" title="设置工作模型副本文件夹"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 6.5h6l2 2h9v9a2 2 0 0 1-2 2h-15Z"/><path d="M3.5 8.5v-2a2 2 0 0 1 2-2h4l2 2h4"/></svg></button>
+          <button id="backupSettings" class="compact-icon" aria-label="副本设置" title="查看副本路径与设置建筑更新提醒间隔"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg></button>
+        </div>
+      </div>
+    </section>
+
+    <section class="onboarding-panel" id="onboardingPanel"><h2 id="onboardingTitle">连接协同项目</h2><p id="onboardingMessage">请连接项目协同.json，或者新建项目。</p><p class="onboarding-error" id="onboardingError"></p><div class="onboarding-actions" id="onboardingActions"></div></section>
+    <section class="toolbar" id="workspaceToolbar"><button id="refreshStatus" title="只检查状态，不载入模型">检查状态</button></section>
+    <section class="status-overview" id="statusOverview"></section>
+
+    <p id="folderWarning" class="native-guide" style="display:none">当前环境未检测到标记文件夹接口，插件仍会使用专业根标记控制显隐。</p>
+    <section class="cards" id="cards"></section>
+  </main>
+
+  <div class="modal-backdrop" id="settingsModal">
+    <section class="modal" role="dialog" aria-modal="true">
+      <div class="modal-head"><h3 id="settingsTitle">联动设置</h3><button id="closeSettings">×</button></div>
+      <div class="modal-body">
+        <div class="setting">
+          <strong>读取</strong>
+          <div class="setting-line"><span>读取方式</span><select id="syncStrategy"><option value="direct">源文件直读</option><option value="mirror">本地镜像</option></select></div>
+          <label class="setting-line"><span>优先使用筛选参考包</span><input id="preferPackage" type="checkbox"></label>
+          <div class="help">本地盘或稳定共享盘优先用“源文件直读”；网络不稳时使用“本地镜像”。</div>
+        </div>
+        <div class="setting">
+          <strong>显示</strong>
+          <label class="setting-line"><span>移除根层级剖面</span><input id="ignoreSections" type="checkbox"></label>
+          <label class="setting-line"><span>只显示选中标记</span><input id="displayFilter" type="checkbox"></label>
+          <input class="tag-search" id="tagSearch" type="search" placeholder="搜索标记" style="width:100%;min-width:0">
+          <div class="tag-toolbar"><button id="selectVisibleTags">全选结果</button><button id="clearTags">清空</button></div>
+          <div class="tag-list" id="tagList"></div>
+        </div>
+      </div>
+      <div class="modal-foot"><button id="cancelSettings">取消</button><button class="primary" id="saveSettings">保存设置</button></div>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="backupSettingsModal">
+    <section class="modal backup-modal" role="dialog" aria-modal="true" aria-labelledby="backupSettingsTitle">
+      <div class="modal-head"><h3 id="backupSettingsTitle">工作模型副本</h3><button id="closeBackupSettings">×</button></div>
+      <div class="modal-body">
+        <div class="backup-form">
+          <div class="backup-field">
+            <label>副本文件夹</label>
+            <div class="backup-path-box empty" id="backupPathValue">未设置</div>
+            <div class="backup-path-actions"><button id="changeBackupFolder">更改文件夹</button><button class="backup-now" id="saveBackupNow" title="新建且未命名的模型会先要求保存当前工作文件">立即保存副本</button></div>
+          </div>
+          <div class="backup-field">
+            <label for="backupInterval">建筑更新提醒间隔</label>
+            <div class="interval-row"><input id="backupInterval" type="number" min="0" max="525600" step="1" inputmode="numeric"><span class="interval-unit">min（分钟）</span></div>
+            <div class="help">仅在接收建筑新版本前判断。发布和上锁不会触发。例：60 表示成功保存副本后的 60 分钟内直接更新；0 表示每次建筑更新都询问。</div>
+          </div>
+          <div class="backup-summary" id="backupSummary">下次接收建筑更新前会询问；发布和上锁不触发。</div>
+        </div>
+      </div>
+      <div class="modal-foot"><button id="cancelBackupSettings">取消</button><button class="primary" id="saveBackupSettings">保存设置</button></div>
+    </section>
+  </div>
+
+  <div class="taskbar" id="taskbar"><div class="task-label" id="taskLabel">正在处理…</div><div class="progress"></div></div>
+  <div class="toast" id="toast"></div>
+
+  <script>
+    (() => {
+      const cards = document.getElementById('cards');
+      const collabPath = document.getElementById('collabPath');
+      const pluginVersion = document.getElementById('pluginVersion');
+      const toast = document.getElementById('toast');
+      const taskbar = document.getElementById('taskbar');
+      const taskLabel = document.getElementById('taskLabel');
+      const folderWarning = document.getElementById('folderWarning');
+      const statusOverview = document.getElementById('statusOverview');
+      const roleLine = document.getElementById('roleLine');
+      const workspaceToolbar = document.getElementById('workspaceToolbar');
+      const onboardingPanel = document.getElementById('onboardingPanel');
+      const onboardingTitle = document.getElementById('onboardingTitle');
+      const onboardingMessage = document.getElementById('onboardingMessage');
+      const onboardingError = document.getElementById('onboardingError');
+      const onboardingActions = document.getElementById('onboardingActions');
+      const hostDiscipline = document.getElementById('hostDiscipline');
+      const backupFolder = document.getElementById('backupFolder');
+      const backupSettings = document.getElementById('backupSettings');
+      const backupSettingsModal = document.getElementById('backupSettingsModal');
+      const backupPathValue = document.getElementById('backupPathValue');
+      const backupInterval = document.getElementById('backupInterval');
+      const backupSummary = document.getElementById('backupSummary');
+      const settingsModal = document.getElementById('settingsModal');
+      const settingsTitle = document.getElementById('settingsTitle');
+      const syncStrategy = document.getElementById('syncStrategy');
+      const preferPackage = document.getElementById('preferPackage');
+      const ignoreSections = document.getElementById('ignoreSections');
+      const displayFilter = document.getElementById('displayFilter');
+      const tagSearch = document.getElementById('tagSearch');
+      const tagList = document.getElementById('tagList');
+      let settingsKey = null;
+      let settingsSelected = new Set();
+      let state = null;
+      let toastTimer = null;
+      let taskTimer = null;
+      let hoveredSpaceId = null;
+
+      // 兼容老版本 SketchUp 内置 CEF：避免 optional chaining / replaceAll / Object.values 等新语法。
+      const valuesOf = obj => Object.keys(obj || {}).map(k => obj[k]);
+      const entriesOf = obj => Object.keys(obj || {}).map(k => [k, obj[k]]);
+      const setToArray = set => { const arr = []; set.forEach(v => arr.push(v)); return arr; };
+      const esc = value => String(value == null ? '' : value)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+      const fileName = value => String(value || '').split(/[\\/]/).pop() || '未连接';
+      const statusClass = link => (link && link.status_code) || 'disconnected';
+      const eyeSvg = open => open
+        ? '<svg class="eye-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.8"/></svg>'
+        : '<svg class="eye-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 6.1A10.7 10.7 0 0 1 12 6c6 0 9.5 6 9.5 6a17.6 17.6 0 0 1-3 3.7M6.2 6.3C3.8 8 2.5 12 2.5 12s3.5 6 9.5 6c1.2 0 2.3-.2 3.3-.6"/><path d="M9.8 9.8a3 3 0 0 0 4.4 4.4"/></svg>';
+      const pencilSvg = '<svg class="pencil-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l10.6-10.6a2.1 2.1 0 0 0-4-4L4 16v4Z"/><path d="m13.5 6.5 4 4"/></svg>';
+      const gearSvg = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>';
+      const commitRemaining = link => Math.max(0, Math.ceil(((Number((link && link.commit_countdown_until) || 0)) * 1000 - Date.now()) / 1000));
+      const showTask = label => { taskLabel.textContent = label || '正在处理…'; taskbar.classList.add('show'); clearTimeout(taskTimer); taskTimer = setTimeout(hideTask, 120000); };
+      const hideTask = () => { taskbar.classList.remove('show'); clearTimeout(taskTimer); };
+      const call = (name, ...args) => {
+        if (window.sketchup && typeof window.sketchup[name] === 'function') { window.sketchup[name].apply(window.sketchup, args); return true; }
+        if (window.LinkHub && window.LinkHub.showToast) { window.LinkHub.showToast({message:'插件接口未就绪：' + name + '。请关闭并重新打开 SU LinkHub 面板，或重启 SketchUp。',level:'error'}); }
+        return false;
+      };
+      const run = (name, label, ...args) => { showTask(label); if (!call(name, ...args)) hideTask(); };
+
+      const editPanel = (key, link) => {
+        const hostNative = link.is_host_discipline && !link.architecture_collaboration_available;
+        if (hostNative || !link.loaded) return '';
+        if (link.native_editing) return `<div class="edit-banner editing"><div><div class="edit-title">${key === 'architecture' ? '正在修改建筑' : '正在临时修改'}</div><div class="edit-copy">${key === 'architecture' ? (link.architecture_edit_context_inside ? 'ESC 可退出到全模；建筑继续解锁并保持协作占用。' : '当前正在全模审阅；双击或点“进入”可继续，只有 LinkHub“发布”会提交。') : '原生锁定/解锁不参与协同提交；请使用 LinkHub 操作。'}</div></div></div>`;
+        if (link.preview_pending_publish) {
+          const remain = commitRemaining(link);
+          return `<div class="edit-banner ${link.source_locked_by_other ? 'blocked' : 'pending'}"><div><div class="edit-title">${key === 'architecture' ? '建筑待发布' : '待确认提交'}</div><div class="edit-copy">${link.source_locked_by_other ? `${esc(link.source_lock_owner || '其他成员')} 正在占用该模型，暂时不能提交。` : (key === 'architecture' ? '本地修改与协作占用均已保留；可以发布，也可以继续修改。' : (remain > 0 ? `为避免误触，${remain} 秒后可点击确认提交；不想提交可点“取消提交”。` : '可以确认写回协同缓存；不想提交可点“取消提交”。'))}</div></div></div>`;
+        }
+        if (link.last_commit_result === 'error') return `<div class="edit-banner blocked"><div><div class="edit-title">提交未完成</div><div class="edit-copy">${esc(link.preview_conflict_detail || link.status || '提交失败，已退出确认提交状态。')}</div></div></div>`;
+        // 提交成功已经由短暂 Toast 反馈；卡片只保留“已是最新”和更新时间，不再长期重复占位。
+        return '';
+      };
+
+      const cardHtml = (key, link) => {
+        const hostNative = link.is_host_discipline && !link.architecture_collaboration_available;
+        const managedArchitecture = key === 'architecture' && !!link.architecture_collaboration_available;
+        const empty = !link.model_path && !hostNative;
+        const cardStatus = statusClass(link);
+        const updatedMeta = link.last_update ? `更新于 ${link.last_update}` : '';
+        const statusDetail = link.status_detail || link.status || '状态未知';
+        const showStatusDetail = !!link.source_locked_by_other || cardStatus === 'error';
+        if (link.enabled === false) {
+          return `<article class="card panel minimized status-disabled discipline-${key}" data-action="toggle-enabled" data-key="${key}" title="点击重新连接${esc(link.name)}"><span class="mini-title">${esc(link.name)}：断开</span><button class="mini-enable" data-action="toggle-enabled" data-key="${key}">启用</button></article>`;
+        }
+        const remain = link.preview_pending_publish ? commitRemaining(link) : 0;
+        const managedEditFlags = !!(link.native_editing || link.preview_edit_active || link.preview_pending_publish || link.edit_session_active);
+        const managedOwnedEdit = managedArchitecture && !!link.source_lock_owned && managedEditFlags;
+        const managedInterruptedEdit = managedArchitecture && !link.source_locked_by_other && !link.source_lock_owned && managedEditFlags;
+        let mainAction = '', mainLabel = '等待协同';
+        if (managedArchitecture && link.source_locked_by_other) {
+          mainLabel = '占用中';
+        } else if (managedOwnedEdit) {
+          mainAction = 'architecture-quick'; mainLabel = '发布';
+        } else if (managedInterruptedEdit) {
+          mainAction = 'begin-edit'; mainLabel = '恢复';
+        } else if (link.preview_pending_publish) {
+          mainAction = remain > 0 ? '' : 'finish-edit'; mainLabel = remain > 0 ? `等待 ${remain}s` : (managedArchitecture ? '发布' : '确认提交');
+        } else if (link.native_editing || link.preview_edit_active) {
+          mainLabel = '修改中';
+        } else if (hostNative) {
+          mainAction = key === 'architecture' ? 'architecture-quick' : 'publish-collab'; mainLabel = '发布';
+        } else if (managedArchitecture) {
+          if (link.architecture_update_required || !link.loaded) { mainAction = 'update'; mainLabel = '更新'; }
+          else { mainAction = 'begin-edit'; mainLabel = '修改'; }
+        } else if (!empty) {
+          mainAction = 'update'; mainLabel = '更新';
+        }
+        const mainClass = link.preview_pending_publish ? 'primary commit' : 'primary';
+        const editingBlocksAction = (link.native_editing || link.preview_edit_active) && mainAction !== 'architecture-quick' && !(managedInterruptedEdit && mainAction === 'begin-edit');
+        const mainDisabled = (editingBlocksAction || link.source_locked_by_other || !mainAction || (link.preview_pending_publish && remain > 0 && mainAction !== 'architecture-quick')) ? 'disabled' : '';
+        const cancelCommitButton = link.preview_pending_publish && !link.source_locked_by_other ? (managedArchitecture ? `<button data-action="begin-edit" data-key="${key}" class="cancel" title="保留协作占用并重新进入建筑组件">继续修改</button>` : `<button data-action="discard-edit" data-key="${key}" class="cancel" title="取消本次提交确认，不重载模型，也不丢失当前模型中的临时内容">取消提交</button>`) : '';
+        const continueEditButton = managedOwnedEdit && link.native_editing && !link.architecture_edit_context_inside ? `<button data-action="begin-edit" data-key="${key}" class="cancel" title="建筑仍由你占用；重新进入建筑源组件继续修改">进入</button>` : '';
+        const updatePreviousButton = managedArchitecture && link.source_locked_by_other && link.model_exists ? `<button data-action="update-architecture-previous" data-key="${key}" title="读取共享端最近一次已发布的建筑版本；不会解除占用，也不会读取或覆盖对方尚未发布的修改">更新上版</button>` : '';
+        const settingsButton = `<button class="settings-gear" data-action="link-settings" data-key="${key}" ${hostNative ? 'disabled' : ''} aria-label="${esc(link.name)}设置" title="${esc(link.name)}联动设置">${gearSvg}</button>`;
+        return `<article class="card panel status-${cardStatus} discipline-${key}">
+          <div class="card-head"><div class="title-wrap"><div class="code">${esc(link.code)}</div><div><h2>${esc(link.name)}</h2>${updatedMeta ? `<div class="card-meta" title="${esc(updatedMeta)}">${esc(updatedMeta)}</div>` : ''}</div></div><div class="status-wrap"><button class="enable-toggle on" data-action="toggle-enabled" data-key="${key}" ${link.is_host_discipline ? 'disabled' : ''} title="${link.is_host_discipline ? '当前工作区不能断开' : '断开后从当前模型移除该专业参考；再次启用时重新连接'}">断开</button><button class="refresh-mini" data-action="refresh-reset" data-key="${key}" ${(!link.loaded || link.is_host_discipline) ? 'disabled' : ''} title="强制刷新并重置原位">刷新</button><div class="status ${cardStatus}" title="${esc(statusDetail)}"><span class="dot"></span>${esc(link.status_label || link.status || '状态')}</div><button data-action="visibility" data-key="${key}" class="discipline-eye ${(link.loaded && link.visible) ? 'active' : ''}" ${(!link.loaded || hostNative) ? 'disabled' : ''} title="${hostNative ? '当前工作区使用原生内容，请用 SketchUp 标记控制显示' : (!link.loaded ? `${esc(link.name)}参考尚未载入` : (link.visible ? `隐藏${esc(link.name)}参考` : `显示${esc(link.name)}参考`))}">${eyeSvg(!!(link.loaded && link.visible))}</button></div></div>
+          ${showStatusDetail ? `<div class="status-detail" title="${esc(statusDetail)}">${esc(statusDetail)}</div>` : ''}
+          <div class="quick-actions"><button class="${mainClass}" data-action="${mainAction}" data-key="${key}" ${mainDisabled} title="${managedArchitecture && mainAction === 'update' ? '可选择另存当前整份 SU 副本，也可不保存副本直接更新建筑' : (managedArchitecture && mainAction === 'begin-edit' ? (managedInterruptedEdit ? '重新取得中断的建筑协作占用，并保留当前本地内容继续修改' : '取得建筑协作占用并自动进入建筑组件') : (mainAction === 'architecture-quick' ? '建筑发布：退出组件、锁定并提交；若有远端新版本则执行安全更新' : (link.preview_pending_publish ? '确认写回当前建筑协同模型' : '')))}">${mainLabel}</button>${updatePreviousButton}${continueEditButton}${cancelCommitButton}${settingsButton}</div>
+          ${editPanel(key, link)}
+        </article>`;
+      };
+
+      const spaceCardHtml = () => {
+        const spaces = (state && state.space_models) || [];
+        const editing = spaces.filter(item => item.status_code === 'editing').length;
+        const pending = spaces.filter(item => item.status_code === 'pending' || item.status_code === 'waiting').length;
+        const errors = spaces.filter(item => item.status_code === 'error').length;
+        const rows = spaces.map(item => {
+          const rowClass = ['current','editing','error','pending'].indexOf(item.status_code) >= 0 ? item.status_code : '';
+          const pathTitle = item.model_resolved || item.model_path || '';
+          const detailTitle = [item.status_detail || '', pathTitle].filter(Boolean).join('\n');
+          const inside = !!item.edit_context_inside;
+          const editingSelf = !!item.editing_by_self;
+          const eyeOpen = inside && !!item.references_visible_during_edit;
+          const eyeTitle = editingSelf && inside ? (eyeOpen ? '隐藏其他建筑、景观和空间参考' : '显示其他建筑、景观和空间参考') : (editingSelf ? '当前已退出到全模；重新进入空间后可切换空间参考' : (item.editing_by_other ? '该空间正在由其他成员修改' : '进入修改后可切换参考显示'));
+          const editLabel = editingSelf && !inside ? '进入' : '修改';
+          const editDisabled = !item.loaded || !item.model_exists || !!item.editing_by_other || (editingSelf && inside);
+          const editTitle = editingSelf && !inside ? '空间仍由你占用；重新进入该空间继续修改' : (item.publish_pending ? '继续修改并自动进入该空间' : '解锁、隐藏其他联动模型并自动进入该空间');
+          const hoverClass = String(item.id) === String(hoveredSpaceId || '') ? ' hover-open' : '';
+          return `<div class="space-row ${rowClass}${hoverClass}" data-space-id="${esc(item.id)}" tabindex="0" title="${esc(detailTitle)}">
+            <div class="space-main"><div class="space-name-wrap"><div class="space-name">${esc(item.display_filename || ((item.number || '') + ':' + (item.name || '') + '.skp'))}</div><button class="space-rename" data-action="rename-space" data-space-id="${esc(item.id)}" ${item.editing ? 'disabled' : ''} title="修改空间名称并同步共享文件">${pencilSvg}</button></div><div class="space-state"><span class="space-status-pill ${esc(item.status_code || '')}"><span class="dot"></span>${esc(item.status_label || item.status || '')}</span>${item.model_exists ? `<span class="space-size">${esc(item.model_size_mb || 0)} MB</span>` : ''}</div></div>
+            <div class="space-actions">
+              <button class="space-eye ${eyeOpen ? 'active' : ''}" data-action="toggle-space-edit-references" data-space-id="${esc(item.id)}" ${!(editingSelf && inside) ? 'disabled' : ''} title="${esc(eyeTitle)}">${eyeSvg(eyeOpen)}</button>
+              <button data-action="edit-space" data-space-id="${esc(item.id)}" ${editDisabled ? 'disabled' : ''} title="${esc(editTitle)}">${editLabel}</button>
+              <button class="space-publish" data-action="publish-space" data-space-id="${esc(item.id)}" ${!editingSelf ? 'disabled' : ''} title="LinkHub 安全发布：版本校验通过后写入共享 SKP、释放占用并锁定">发布</button>
+              <button data-action="update-space" data-space-id="${esc(item.id)}" ${!item.model_exists ? 'disabled' : ''} title="从协同文件夹重新载入；本地修改中时相当于放弃修改">更新</button>
+              <button class="space-delete" data-action="delete-space" data-space-id="${esc(item.id)}" ${item.editing_by_other ? 'disabled' : ''} title="删除空间模型">×</button>
+            </div>
+          </div>`;
+        }).join('');
+        const summary = spaces.length ? `${spaces.length} 个空间${editing ? ` · ${editing} 修改中` : ''}${pending ? ` · ${pending} 待更新` : ''}${errors ? ` · ${errors} 异常` : ''}` : '还没有空间模型';
+        const allHidden = !!state.space_collection_hidden;
+        const collectionEyeTitle = allHidden ? '显示全部软装＋硬装空间' : '一键隐藏全部软装＋硬装空间';
+        const collectionEyeDisabled = !(state.space_collection_loaded_count > 0) || !!state.space_collection_editing;
+        return `<article class="card panel space-card discipline-space_collection">
+          <div class="space-head"><div class="title-wrap"><div class="code">S/H</div><div><h2 title="请使用 LinkHub“修改”取得协作占用；ESC 只退出到全模并保留占用；只有 LinkHub“发布”或“取消修改”才结束协同编辑。">软装＋硬装</h2><div class="space-summary" title="悬停空间名称查看状态；悬停空间行展开直接操作">${esc(summary)}</div></div></div><div class="space-head-actions"><button class="space-add" data-action="add-space" title="新增空间模型">新增</button><button class="space-card-eye ${allHidden ? '' : 'active'}" data-action="toggle-space-collection-visibility" ${collectionEyeDisabled ? 'disabled' : ''} title="${esc(collectionEyeTitle)}">${eyeSvg(!allHidden)}</button></div></div>
+          <div class="space-list">${rows || '<div class="space-empty">选择一个组件，然后点击“新增”。系统会自动使用最小空缺序号，例如删除 1 后下次新增会重新使用 1。</div>'}</div>
+        </article>`;
+      };
+
+      const filteredCatalog = () => {
+        if (!settingsKey || !state || !state.links || !state.links[settingsKey]) return [];
+        const q = tagSearch.value.trim().toLowerCase();
+        const seen = {};
+        const out = [];
+        (state.links[settingsKey].display_tag_catalog || []).map(String).forEach(name => {
+          if (seen[name]) return; seen[name] = true;
+          if (!q || name.toLowerCase().includes(q)) out.push(name);
+        });
+        return out;
+      };
+      const renderTagList = () => {
+        const list = filteredCatalog();
+        tagList.innerHTML = list.length ? list.map(name => `<label class="tag-item"><input type="checkbox" data-display-tag="${esc(name)}" ${settingsSelected.has(name) ? 'checked' : ''}><span>${esc(name)}</span></label>`).join('') : `<div class="tag-empty">尚无可选标记，请先更新该专业。</div>`;
+      };
+      const openSettings = key => {
+        const link = state && state.links ? state.links[key] : null; if (!link) return;
+        settingsKey = key; settingsTitle.textContent = `${link.name} · 联动设置`;
+        syncStrategy.value = link.sync_strategy || 'direct'; preferPackage.checked = link.prefer_reference_package !== false;
+        ignoreSections.checked = link.ignore_section_planes !== false; displayFilter.checked = !!link.display_filter_enabled;
+        settingsSelected = new Set((link.display_selected_tags || []).map(String)); tagSearch.value = ''; renderTagList(); settingsModal.classList.add('show');
+      };
+      const closeSettings = () => { settingsModal.classList.remove('show'); settingsKey = null; };
+      const renderBackupSettings = () => {
+        if (!state) return;
+        const path = state.architecture_backup_dir || '';
+        backupPathValue.textContent = path || '未设置；点击“更改文件夹”选择';
+        backupPathValue.title = path;
+        backupPathValue.classList.toggle('empty', !state.architecture_backup_dir_exists);
+        const interval = Number(state.architecture_backup_interval_minutes == null ? 60 : state.architecture_backup_interval_minutes);
+        const lastAt = state.architecture_backup_last_at || '';
+        const lastPath = state.architecture_backup_last_path || '';
+        if (interval === 0) backupSummary.textContent = '每次接收建筑新版本前都会询问；发布和上锁不触发。';
+        else if (!lastAt || !lastPath) backupSummary.textContent = '尚无成功副本；下次接收建筑新版本前会询问。';
+        else if (state.architecture_backup_prompt_due) backupSummary.textContent = `上次成功副本：${lastAt}；下次接收建筑更新前会询问。`;
+        else backupSummary.textContent = `上次成功副本：${lastAt}；约 ${state.architecture_backup_minutes_remaining || 0} 分钟后恢复建筑更新提醒。`;
+      };
+      const openBackupSettings = () => {
+        if (!state) return;
+        backupInterval.value = String(state.architecture_backup_interval_minutes == null ? 60 : state.architecture_backup_interval_minutes);
+        renderBackupSettings();
+        backupSettingsModal.classList.add('show');
+      };
+      const closeBackupSettings = () => { backupSettingsModal.classList.remove('show'); };
+      const render = () => {
+        if (!state) return;
+        pluginVersion.textContent = `v${state.plugin_version || '0.9.87'} · 点击重载`;
+        pluginVersion.title = `运行时第 ${state.runtime_generation || 1} 代 · 引导器 API ${state.bootstrap_api || 1} · 点击重新载入插件`;
+        const cdir = state.collab_project_dir_resolved || '';
+        collabPath.textContent = cdir ? `协同位置：${cdir}` : '协同位置：未设置，新项目点“新建”，已有项目点“连接”';
+        collabPath.title = state.collab_project_json_resolved || cdir || '未设置';
+        const onboardingStage = state.onboarding_stage || 'connect';
+        const workspaceReady = onboardingStage === 'ready';
+        onboardingPanel.style.display = workspaceReady ? 'none' : 'block';
+        roleLine.style.display = workspaceReady ? 'flex' : 'none';
+        workspaceToolbar.style.display = workspaceReady ? 'grid' : 'none';
+        statusOverview.style.display = workspaceReady ? 'grid' : 'none';
+        folderWarning.style.display = workspaceReady && !state.tag_folders_supported ? 'flex' : 'none';
+        cards.style.display = workspaceReady ? 'grid' : 'none';
+        if (!workspaceReady) {
+          onboardingTitle.textContent = onboardingStage === 'workspace' ? '选择当前工作区' : '连接协同项目';
+          onboardingMessage.textContent = state.onboarding_message || (onboardingStage === 'workspace' ? '请选择建筑、硬装、软装或景观。' : '请连接项目协同.json，或者新建项目。');
+          onboardingError.textContent = state.onboarding_error || '';
+          onboardingActions.className = `onboarding-actions ${onboardingStage === 'workspace' ? 'roles' : ''}`;
+          onboardingActions.innerHTML = onboardingStage === 'workspace'
+            ? '<button class="primary" data-onboarding-role="architecture">建筑</button><button data-onboarding-role="hard_finish">硬装</button><button data-onboarding-role="soft_finish">软装</button><button data-onboarding-role="landscape">景观</button><button class="change-project" data-onboarding-action="connect">更换项目</button>' 
+            : '<button class="primary" data-onboarding-action="create">新建项目</button><button data-onboarding-action="connect">连接 JSON</button>';
+          return;
+        }
+        folderWarning.style.display = state.tag_folders_supported ? 'none' : 'flex';
+        hostDiscipline.value = state.host_discipline || 'architecture';
+        backupFolder.classList.toggle('active', !!state.architecture_backup_dir_exists);
+        backupFolder.title = state.architecture_backup_dir_exists ? `打开工作模型副本文件夹：${state.architecture_backup_dir}` : '尚未设置工作模型副本文件夹；点击选择';
+        backupSettings.title = `工作模型副本 · 建筑更新提醒 ${state.architecture_backup_interval_minutes == null ? 60 : state.architecture_backup_interval_minutes} 分钟`;
+        renderBackupSettings();
+        const visibleLinks = ['architecture','landscape'].map(key => (state.links || {})[key]).filter(Boolean);
+        const statusItems = visibleLinks.concat((state.space_models || []));
+        const count = c => statusItems.filter(item => (item.status_code || 'disconnected') === c).length;
+        const current = count('current'), pending = count('pending') + count('waiting') + count('disconnected') + count('disabled'), editing = count('editing') + count('locked'), error = count('error');
+        statusOverview.innerHTML = `<div class="overview current"><span class="dot"></span><strong>${current}</strong><span>已更新</span></div><div class="overview pending"><span class="dot"></span><strong>${pending}</strong><span>待更新</span></div><div class="overview editing"><span class="dot"></span><strong>${editing}</strong><span>修改中</span></div><div class="overview error"><span class="dot"></span><strong>${error}</strong><span>异常</span></div>`;
+        const architecture = state.links && state.links.architecture ? cardHtml('architecture', state.links.architecture) : '';
+        const landscape = state.links && state.links.landscape ? cardHtml('landscape', state.links.landscape) : '';
+        cards.innerHTML = architecture + spaceCardHtml() + landscape;
+        applySpaceHover();
+      };
+
+      const applySpaceHover = () => {
+        const rows = cards.querySelectorAll('.space-row');
+        for (let i = 0; i < rows.length; i += 1) {
+          rows[i].classList.toggle('hover-open', !!hoveredSpaceId && String(rows[i].dataset.spaceId || '') === String(hoveredSpaceId));
+        }
+      };
+      const setHoveredSpace = id => {
+        const nextId = id == null || id === '' ? null : String(id);
+        if (hoveredSpaceId === nextId) return;
+        hoveredSpaceId = nextId;
+        applySpaceHover();
+      };
+      /* 使用容器级 mousemove/mouseleave，而不是每张卡片的 mouseout。
+         后端约每 3 秒刷新一次状态并重建 DOM 时，仍保留当前卡片的展开状态。 */
+      cards.addEventListener('mousemove', event => {
+        const row = event.target.closest('.space-row');
+        setHoveredSpace(row ? row.dataset.spaceId : null);
+      });
+      cards.addEventListener('mouseleave', () => setHoveredSpace(null));
+
+      cards.addEventListener('click', event => {
+        const btn = event.target.closest('button[data-action]'); if (!btn) return;
+        const action = btn.dataset.action, key = btn.dataset.key, spaceId = btn.dataset.spaceId;
+        if (action === 'open-project-schedule') { call('open_project_schedule'); return; }
+        if (action === 'add-space') { run('add_space_model','正在创建并发布空间模型…'); return; }
+        if (action === 'rename-space') { call('rename_space_model',spaceId); return; }
+        if (action === 'edit-space') { run('edit_space_model','正在进入空间…',spaceId); return; }
+        if (action === 'toggle-space-edit-references') { call('toggle_space_edit_references',spaceId); return; }
+        if (action === 'toggle-space-collection-visibility') { call('toggle_space_collection_visibility'); return; }
+        if (action === 'set-space-representation') { call('set_space_display_mode', btn.dataset.mode); return; }
+        if (action === 'publish-space') { call('publish_space_model',spaceId); return; }
+        if (action === 'update-space') { run('update_space_model','正在更新空间模型…',spaceId); return; }
+        if (action === 'delete-space') { call('delete_space_model',spaceId); return; }
+        if (action === 'update') run('update_link', `正在更新${state.links[key].name}…`, key);
+        if (action === 'update-architecture-previous') run('update_architecture_previous', '正在读取建筑上一发布版…');
+        if (action === 'begin-edit') run('begin_edit', `正在进入${state.links[key].name}…`, key);
+        if (action === 'architecture-quick') run('architecture_quick_action','正在处理建筑…');
+        if (action === 'publish-collab') run('publish_collab_cache','正在启动发布…');
+        if (action === 'toggle-enabled') call('toggle_link_enabled', key);
+        if (action === 'refresh-reset') run('refresh_reset_link', `正在刷新并重置${state.links[key].name}…`, key);
+        if (action === 'link-settings') openSettings(key);
+        if (action === 'visibility') call('toggle_visibility', key);
+        if (action === 'highlight') call('highlight_link', key);
+        if (action === 'finish-edit') run('finish_edit', `正在提交${state.links[key].name}修改…`, key);
+        if (action === 'discard-edit') call('discard_edit', key);
+      });
+
+      onboardingActions.addEventListener('click', event => {
+        const button = event.target.closest('button'); if (!button) return;
+        const role = button.dataset.onboardingRole;
+        const action = button.dataset.onboardingAction;
+        if (role) { call('set_host_discipline', role); return; }
+        if (action === 'create') { run('create_collab_project','正在建立协同项目…'); return; }
+        if (action === 'connect') run('choose_collab_project','正在连接已有协同项目…');
+      });
+
+      hostDiscipline.addEventListener('change', () => call('set_host_discipline', hostDiscipline.value));
+      backupFolder.addEventListener('click', () => call('open_or_choose_architecture_backup_folder'));
+      backupSettings.addEventListener('click', openBackupSettings);
+      document.getElementById('changeBackupFolder').addEventListener('click', () => call('choose_architecture_backup_folder'));
+      document.getElementById('saveBackupNow').addEventListener('click', () => {
+        closeBackupSettings();
+        run('save_working_copy_now','正在保存整份工作模型副本…');
+      });
+      document.getElementById('closeBackupSettings').addEventListener('click', closeBackupSettings);
+      document.getElementById('cancelBackupSettings').addEventListener('click', closeBackupSettings);
+      backupSettingsModal.addEventListener('click', event => { if (event.target === backupSettingsModal) closeBackupSettings(); });
+      document.getElementById('saveBackupSettings').addEventListener('click', () => {
+        const raw = String(backupInterval.value || '').trim();
+        const minutes = Number(raw);
+        if (!/^\d+$/.test(raw) || !isFinite(minutes) || minutes < 0 || minutes > 525600) {
+          window.LinkHub.showToast({message:'提醒间隔请输入 0–525600 之间的整数分钟。',level:'error'});
+          return;
+        }
+        call('save_architecture_backup_settings', raw);
+        closeBackupSettings();
+      });
+      pluginVersion.addEventListener('click', () => run('hot_reload_runtime','正在重新载入插件…'));
+      document.getElementById('refreshStatus').addEventListener('click', () => run('refresh_status','正在检查状态…'));
+      document.getElementById('createProject').addEventListener('click', () => run('create_collab_project','正在建立协同项目…'));
+      document.getElementById('connectProject').addEventListener('click', () => run('choose_collab_project','正在连接已有协同项目…'));
+      collabPath.addEventListener('click', () => run('choose_collab_project','正在连接已有协同项目…'));
+      tagSearch.addEventListener('input', renderTagList);
+      tagList.addEventListener('change', event => { const input = event.target.closest('input[data-display-tag]'); if (!input) return; input.checked ? settingsSelected.add(input.dataset.displayTag) : settingsSelected.delete(input.dataset.displayTag); });
+      document.getElementById('selectVisibleTags').addEventListener('click', () => { filteredCatalog().forEach(n => settingsSelected.add(n)); renderTagList(); });
+      document.getElementById('clearTags').addEventListener('click', () => { settingsSelected.clear(); renderTagList(); });
+      document.getElementById('closeSettings').addEventListener('click', closeSettings);
+      document.getElementById('cancelSettings').addEventListener('click', closeSettings);
+      settingsModal.addEventListener('click', event => { if (event.target === settingsModal) closeSettings(); });
+      document.getElementById('saveSettings').addEventListener('click', () => {
+        if (!settingsKey) return;
+        if (displayFilter.checked && settingsSelected.size === 0) { window.LinkHub.showToast({message:'开启标记筛选时，至少选择一个标记。',level:'error'}); return; }
+        run('save_link_settings','正在保存联动设置…',settingsKey,syncStrategy.value,preferPackage.checked,ignoreSections.checked,displayFilter.checked,JSON.stringify(setToArray(settingsSelected))); closeSettings();
+      });
+
+      /* 原生锁定状态由 Ruby 的轻量监视器刷新。不要在窗口 focus / mouseenter 时
+         重建卡片 DOM，否则从建模视口点回面板的首次点击可能正好被刷新吞掉。 */
+      setInterval(() => {
+        if (!state) return;
+        if (valuesOf(state.links || {}).some(link => link.preview_pending_publish && commitRemaining(link) > 0)) render();
+      }, 1000);
+
+      window.LinkHub = {
+        receiveState(nextState) { state = nextState; render(); setTimeout(hideTask,180); },
+        patchLink(key,payload) { if (state && state.links && state.links[key]) { Object.assign(state.links[key],payload||{}); render(); } },
+        showToast(payload) { hideTask(); toast.textContent = payload.message || ''; toast.className = `toast show ${payload.level || ''}`; clearTimeout(toastTimer); toastTimer = setTimeout(() => { toast.className='toast'; },4400); }
+      };
+      let readyAttempts = 0;
+      const readyTimer = setInterval(() => {
+        readyAttempts += 1;
+        if (call('ready') || readyAttempts >= 20) clearInterval(readyTimer);
+      }, 150);
+    })();
+  </script>
+</body>
+</html>

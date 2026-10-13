@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>SU LinkHub 软装清单预览</title>
+  <style>
+    html,body,iframe{width:100%;height:100%;margin:0;border:0;overflow:hidden;background:#f5f6f8}
+  </style>
+</head>
+<body>
+  <iframe id="schedule" src="../src/su_linkhub/ui/soft_schedule.html" title="项目软装清单"></iframe>
+  <script>
+  (function(){
+    'use strict';
+    var frame=document.getElementById('schedule');
+    var thumb=function(bg,label){return 'data:image/svg+xml;charset=utf-8,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180" viewBox="0 0 180 180"><rect width="180" height="180" rx="18" fill="'+bg+'"/><path d="M32 122h116v14H32zM42 76h96v48H42zM52 52h76v28H52z" fill="white" opacity=".92"/><text x="90" y="160" text-anchor="middle" font-family="sans-serif" font-size="15" fill="white">'+label+'</text></svg>');};
+    function row(id,name,category,subcategory,space,quantity,options){
+      options=options||{};
+      return {model_id:id,source_path:'C:/SU_LinkHub/library/'+category+'/'+name+'.skp',variant_key:'v:'+id,variant_keys:['v:'+id],base_name:name,library_name:name,display_name:name,recognition_name:name,source_filename:name+'.skp',recognition_hints:[name],category:category,subcategory:subcategory,quantity:quantity,price:options.price||'',length_mm:options.length||1200,width_mm:options.width||600,height_mm:options.height||750,material_description:options.material||'',remark:options.remark||'',remark_display:options.remark||'',extra_fields:options.extras||{},spaces:[space],space_names:space,thumbnail_url:options.blank?'':thumb(options.color||'#7b82a8',category),thumbnail_ready:!options.blank,thumbnail_repairable:true,thumbnail_view:options.view||'a',library_record_found:true,merged_model_count:options.merged||0,merged_model_ids:options.merged?['m-merge-copy']:[],supplemental_photos:[]};
+    }
+    var rows=[
+      row('m-01','弧形休闲椅','家具','单椅','17:三层大客房',2,{price:'2680',length:780,width:820,height:760,material:'米白羊羔绒',extras:{seat_height:'430',style:'现代'},color:'#6f7fa8',merged:2}),
+      row('m-02','黑胡桃床头柜','家具','柜类','17:三层大客房',2,{price:'1880',length:520,width:420,height:520,material:'黑胡桃木',extras:{style:'现代'},color:'#90715f',view:'b'}),
+      row('m-03','云朵双人沙发','家具','沙发','05:一层客厅',1,{price:'12800',length:2200,width:980,height:760,material:'浅灰科技布',extras:{seat_height:'410',style:'当代'},color:'#8994ad'}),
+      row('m-04','圆形边几','家具','几类','05:一层客厅',2,{price:'1380',length:500,width:500,height:560,material:'洞石',extras:{style:'轻奢'},blank:true}),
+      row('m-05','玻璃吊灯','灯具','吊灯','05:一层客厅',1,{price:'5600',length:900,width:900,height:480,material:'烟灰玻璃',extras:{light_source:'LED 3000K'},color:'#b8864b'}),
+      row('m-06','黄铜壁灯','灯具','壁灯','12:二层书房',2,{price:'1280',length:220,width:160,height:460,material:'拉丝黄铜',extras:{light_source:'LED 3000K'},color:'#be9655'}),
+      row('m-07','书桌','家具','桌类','12:二层书房',1,{price:'6800',length:1600,width:700,height:750,material:'木饰面',extras:{style:'现代'},color:'#7d6c60'}),
+      row('m-08','阅读椅','家具','单椅','12:二层书房',1,{price:'3200',length:720,width:760,height:810,material:'深棕皮革',extras:{seat_height:'440',style:'现代'},blank:true})
+    ];
+    var spaces=[
+      {id:'space-17',label:'17:三层大客房',loaded:true,rows:rows.slice(0,2)},
+      {id:'space-05',label:'05:一层客厅',loaded:true,rows:rows.slice(2,5)},
+      {id:'space-12',label:'12:二层书房',loaded:true,rows:rows.slice(5,8)}
+    ];
+    var mock={available:true,project_name:'杭州湖畔样板间',generated_at:'2026-10-12 18:30',draft_scope_key:'preview-project',excluded_space_count:0,categories:['家具','灯具'],subcategory_options:{'家具':['单椅','柜类','沙发','几类','桌类'],'灯具':['吊灯','壁灯']},template_fields:{'家具':[{key:'style',label:'风格',defaults:['现代','当代','轻奢']},{key:'seat_height',label:'坐高（mm）',input_type:'measure',unit:'mm',manual_required:true,subcategories:['单椅','沙发']}],'灯具':[{key:'light_source',label:'光源',defaults:['LED 3000K','LED 4000K']}]},spaces:spaces,total_rows:rows};
+    frame.addEventListener('load',function(){
+      var win=frame.contentWindow;
+      var callbackNames=['ready','refresh_schedule','export_schedule_diagnostic_log','export_schedule_submit_log','load_schedule_drafts','save_schedule_drafts','repair_schedule_thumbnails','begin_schedule_photo_upload','upload_schedule_photo_chunk','finish_schedule_photo_upload','delete_schedule_photo','apply_schedule_changes','locate_schedule_model','export_schedule','schedule_thumbnail_view'];
+      win.sketchup={};
+      callbackNames.forEach(function(name){win.sketchup[name]=function(){console.log('[sketchup]',name,Array.prototype.slice.call(arguments));};});
+      win.SoftSchedule.receiveState(mock);
+      var mode=new URLSearchParams(location.search).get('mode')||'drafts';
+      if(mode==='drafts')setTimeout(function(){
+        var nameInput=win.document.querySelector('.name-input');
+        if(nameInput){nameInput.value=nameInput.value+'（面料待确认）';nameInput.dispatchEvent(new win.Event('input',{bubbles:true}));}
+        var dimInput=win.document.querySelector('[data-dim="length_mm"]');
+        if(dimInput){dimInput.value=String(Number(dimInput.value)+50);dimInput.dispatchEvent(new win.Event('input',{bubbles:true}));}
+        win.SoftSchedule.markModelChanged({changed:true});
+      },250);
+    });
+  })();
+  </script>
+</body>
+</html>

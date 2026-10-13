@@ -1,0 +1,7 @@
+SU LinkHub v0.13.6.52 - 清单 3/5 假卡死修复版
+
+- 根据 v0.13.6.51 诊断日志定位：dirty_map 读取已完成，随后 previous_token 为 nil，调用 match? 触发 NoMethodError。
+- 修复空历史签名：previous_token 统一转字符串；首次运行、空签名、shared-cache 签名均不会异常。
+- 刷新异常不再静默返回并把界面留在旧进度；会直接显示“清单刷新失败 + 异常类型”，并提示导出诊断日志。
+- 诊断日志新增最多 8 行 Ruby backtrace，后续如果再遇到异常可直接定位到 runtime.rb 行号。
+- 保留 v0.13.6.51 的毫秒级清单 trace 与诊断日志按钮。

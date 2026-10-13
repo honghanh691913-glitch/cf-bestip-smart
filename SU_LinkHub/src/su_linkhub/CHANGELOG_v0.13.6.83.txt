@@ -1,0 +1,7 @@
+SU LinkHub v0.13.6.83 · 独立代理工作进程启动修复
+
+- 修复 SketchUp.version=26.x 被错误映射为安装目录“SketchUp 26”的问题；SketchUp 2026 默认目录实际使用“SketchUp 2026”。
+- 独立代理工作进程优先从当前正在运行的 SketchUp 进程反查 SketchUp.exe，支持自定义安装目录。
+- 回退定位会按 2026/26 两种目录命名以及 Program Files 下已安装 SketchUp 版本扫描。
+- 失败日志会记录 version、推导年份和候选 EXE 路径，方便继续诊断。
+- 保留 v0.13.6.82 的独立 SketchUp 六面代理工作进程架构。
