@@ -5262,6 +5262,21 @@ module GavinTools
       end
     end
 
+    # v0.13.7.7：原生“全部解锁”接管的单件编辑，保存完成后把这件家具重新锁上。
+    def relock_soft_individual_edit_target!(record, model = Sketchup.active_model)
+      return false unless record.is_a?(Hash) && record[:restore_locked] == true
+      target = record[:entity]
+      return false unless target && target.valid? && target.respond_to?(:locked=) && !target.locked?
+      model.start_operation('重新锁定家具', true, false, true)
+      target.locked = true
+      model.commit_operation
+      true
+    rescue StandardError => e
+      model.abort_operation rescue nil
+      log_exception('保存后重新锁定家具失败', e)
+      false
+    end
+
     def finalize_soft_individual_edit!(record, model = Sketchup.active_model)
       entity = record[:entity]
       raise '待完成的家具实例已经失效。' unless entity && entity.valid?
@@ -5286,6 +5301,7 @@ module GavinTools
           soft_set_attribute_if_changed(entity, SOFT_MODEL_DICT, 'representation', 'proxy')
           soft_set_attribute_if_changed(entity, SOFT_MODEL_DICT, 'proxy_passthrough', true)
           soft_set_attribute_if_changed(entity, SOFT_MODEL_DICT, 'planar_reference', true)
+          entity.locked = true if record[:restore_locked] == true && entity.respond_to?(:locked=)
           model.commit_operation
           operation_started = false
         rescue StandardError
@@ -5340,6 +5356,7 @@ module GavinTools
       record[:phase] = :waiting_proxy
       record[:force_rebuild] = true
       restore_soft_individual_edit_path_locks!(record, model)
+      relock_soft_individual_edit_target!(record, model)
       detach_soft_individual_edit_entities_observers!(record)
       @soft_individual_edit_sessions&.delete(model.object_id)
 
@@ -5354,6 +5371,7 @@ module GavinTools
       record[:save_error] = e.message.to_s if record.is_a?(Hash)
       quarantined = record.is_a?(Hash) ? quarantine_soft_individual_edit_save_failure!(record, e, model) : false
       restore_soft_individual_edit_path_locks!(record, model) if record.is_a?(Hash) && !quarantined
+      relock_soft_individual_edit_target!(record, model) if record.is_a?(Hash) && !quarantined
       log_exception('完成单件家具编辑失败', e)
       if record.is_a?(Hash)
         show_workspace_floating_notice(
@@ -5715,6 +5733,7 @@ module GavinTools
           source_path: source_path, source_snapshot_signature: source_snapshot_signature,
           entry_representation: entry_representation, entry_definition: entry_definition_before_edit,
           entry_transformation: entry_transformation_before_edit, entry_locked: (candidate[:restore_locked] == true || entry_locked_before_edit),
+          restore_locked: candidate[:restore_locked] == true,
           entry_name: entry_name_before_edit, entry_layer: entry_layer_before_edit,
           # 兼容既有取消/回滚字段；它们现在表示“进入编辑前状态”，不再强制一定是代理。
           proxy_definition: entry_definition_before_edit, proxy_transformation: entry_transformation_before_edit,
